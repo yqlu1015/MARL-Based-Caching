@@ -51,7 +51,7 @@ class MAAC(Agent):
         self.critic_optimizer = [Adam(self.critic[i].parameters(), lr=self.critic_lr)
                                  for i in range(self.n_agents)]
 
-        self.mean_actions = np.random.random((self.n_agents, self.env.n_contents))
+        self.mean_actions = np.random.random((self.n_agents, self.env.n_models))
 
     # agent interact with the environment to collect experience
     def interact(self):

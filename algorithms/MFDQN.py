@@ -6,8 +6,7 @@ import numpy as np
 
 from common.Agent import Agent
 from common.Model import MeanQNet
-from common.utils import identity, to_tensor
-from common.environment.utils.tool import int2binary, binary2int
+from common.utils import identity, to_tensor, index_to_one_hot
 
 
 class MFDQN(Agent):
@@ -28,14 +27,13 @@ class MFDQN(Agent):
                          max_grad_norm, batch_size, episodes_before_train, epsilon_start, epsilon_end, epsilon_decay,
                          target_tau, target_update_step)
 
-        self.alternative_update_steps = 50  # steps for alternatively updating policies and mean actions
         self.temperature = self.env.temperature
 
-        self.qnet = [MeanQNet(self.state_dim, self.env.n_contents, self.critic_hidden_size, self.action_dim,
+        self.qnet = [MeanQNet(self.state_dim, self.env.n_actions, self.critic_hidden_size, self.action_dim,
                               self.critic_output_act).to(device)
                      for _ in range(self.n_agents)]
         self.qnet_target = [
-            MeanQNet(self.state_dim, self.env.n_contents, self.critic_hidden_size, self.action_dim,
+            MeanQNet(self.state_dim, self.env.n_actions, self.critic_hidden_size, self.action_dim,
                      self.critic_output_act).to(device)
             for _ in range(self.n_agents)]
         for i in range(self.n_agents):
@@ -43,8 +41,8 @@ class MFDQN(Agent):
         self.qnet_optimizer = [Adam(self.qnet[i].parameters(), lr=self.critic_lr)
                                for i in range(self.n_agents)]
 
-        self.mean_actions = np.zeros((self.n_agents, self.env.n_contents))
-        self.mean_actions_e = np.zeros((self.n_agents, self.env.n_contents))
+        self.mean_actions = np.zeros((self.n_agents, self.env.n_actions))
+        self.mean_actions_e = np.zeros((self.n_agents, self.env.n_actions))
 
     # agent interact with the environment to collect experience
     def interact(self):
@@ -79,7 +77,7 @@ class MFDQN(Agent):
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
         next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
-        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.env.n_contents)
+        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.env.n_actions)
 
         # compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken
@@ -140,7 +138,7 @@ class MFDQN(Agent):
             #         self.qnet[i](state_tensor, action_tensor, mean_actions_tensor).squeeze(0))
 
             if th.rand(1) < epsilon:
-                actions[i] = np.random.choice(self.env.legal_actions)
+                actions[i] = np.random.choice(self.env.n_actions)
             else:
                 mean_actions_tensor = to_tensor(mean_actions[i], self.device).unsqueeze(0)
                 state_action_values_tensor = self.qnet[i](state_tensor, mean_actions_tensor).squeeze(0)
@@ -154,7 +152,7 @@ class MFDQN(Agent):
             neighbors = self.env.get_obs(i)
             neighbor_actions = []
             for j in neighbors:
-                action = int2binary(actions[j], self.env.n_contents)
+                action = index_to_one_hot(actions[j], self.env.n_actions)
                 neighbor_actions.append(action)
 
                 mean_actions[i] = np.mean(neighbor_actions, axis=0)

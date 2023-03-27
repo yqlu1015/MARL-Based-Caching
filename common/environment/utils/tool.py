@@ -6,7 +6,7 @@ import numpy as np
 # convert  EdgeAgentStates array/tuple to 1d array of numbers
 def states2array(states):
     states = np.array(states).flatten()
-    return np.ravel([[state.cache, state.request] for state in states])
+    return np.ravel([[state.popularity, state.cache] for state in states])
 
 
 def actions2array(actions):
@@ -39,3 +39,11 @@ def seed_everything(seed):
     # random.seed(seed)
     np.random.seed(seed)
     th.manual_seed(seed)
+
+
+def cache2str(cache) -> str:
+    s = ''
+    for c in cache:
+        s = s + str(c) + '-'
+
+    return s

@@ -13,7 +13,7 @@ class Scenario():
         world.shape_size = shape_size
         world.agent_view_sight = agent_view 
         world.n_agents = n_agents
-        world.agents = [EdgeAgent(view_sight=world.agent_view_sight, capacity=agent_capacity, id=i)
+        world.agents = [EdgeAgent(capacity=agent_capacity, view_sight=world.agent_view_sight, id=i)
                         for i in range(n_agents)]
 
         world.n_contents = n_contents
@@ -25,7 +25,7 @@ class Scenario():
 
         world.max_steps = max_steps
 
-        world.valid_content_indices = self._valid_caches(world,world.agents[0])
+        world.valid_model_indices = self._valid_caches(world, world.agents[0])
         world.legal_actions_mask = self._legal_actions(world)
 
         # make initial conditions
@@ -39,7 +39,7 @@ class Scenario():
         # init agent state and global state
         for i, agent in enumerate(world.agents):
             agent.id = i
-            agent.state.cache = np.random.choice(world.valid_content_indices,1)
+            agent.state.cache = np.random.choice(world.valid_model_indices, 1)
             agent.state.request = np.zeros(world.n_contents, dtype=np.uint8)
             agent.location = np.random.random(2) * world.shape_size 
             world.global_state[i] = agent.state

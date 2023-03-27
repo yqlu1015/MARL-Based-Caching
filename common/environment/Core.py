@@ -4,9 +4,10 @@ from typing import List
 from utils.distribution import generate_requests
 
 
-class EdgeAgentState(object):
+class EdgeState(object):
     def __init__(self):
-        self.request = []  # numbers of requests of each dnn
+        # self.request = []  # numbers of requests of each dnn
+        self.popularity = []
         self.cache = []  # one-hot vector of cached dnns
 
 
@@ -23,15 +24,40 @@ class EdgeAgent(object):
         self.capacity = capacity
         # geographic location
         self.location = location
-        # -1: observe the whole state, 0: itself, n: cloeset n neighbors
+        # -1: observe the whole state, 0: itself, n_agents: cloeset n_agents neighbors
         self.view_sight = view_sight
         self.neighbor_mask = None  # the mask for who are neighbors
         # action
         self.action = EdgeAction()
         # state
-        self.state = EdgeAgentState()
+        self.state = EdgeState()
         # script behavior to execute
         self.action_callback = None
+        # reward for cache hit
+        self.reward_c = 0
+        # switch cost
+        self.reward_s = 0
+
+
+# DNN model
+class Model(object):
+    def __init__(self, name: str, type_id: int, accuracy: float, model_size: float, time_c: float, time_e: float,
+                 input_size: float):
+        self.name = name
+        self.id = type_id  # the same type of dnn models share the same type_id, e.g. resnet18, resnet34
+        self.accuracy = accuracy  # top-1 accuracy
+        self.size = model_size  # MB
+        self.inf_time_c = time_c  # s
+        self.inf_time_e = time_e  # s
+        self.input_size = input_size  # Mb
+
+
+# IoT device as user in this scenario
+class User(object):
+    def __init__(self, user_id, loc=np.array([0, 0]), models_num=10):
+        self.id = user_id
+        self.loc = loc
+        self.target = np.zeros(models_num)
 
 
 class EdgeWorld(object):
@@ -40,30 +66,43 @@ class EdgeWorld(object):
         self.shape_size = [0, 0]
 
         # list of agents (can change at execution-time!)
-        self.agents = []
+        self.agents: List[EdgeAgent] = []
         self.n_agents = 0
         self.agent_view_sight = 1
+        self.agent_storage = 0
 
-        # sizes of dnns
-        self.content_sizes = []
-        self.n_contents = 0
+        # list of dnn models
+        self.models: List[List[Model]] = []
+        self.n_models = 0
+        self.model_sizes = []
+
+        # list of iot devices
+        self.users: List[User] = []
+        self.n_users = 0
+
+        # transmission rate from IoTDs to edge servers
+        self.trans_rates_ie = np.zeros((self.n_users, self.n_agents))
+        # transmission rate from edges to the cloud
+        self.trans_rates_ec = np.zeros(self.n_agents)
 
         # state information
-        self.global_state = np.array([EdgeAgentState() for i in range(self.n_agents)])  # log all agents' states
+        self.global_state = np.array([EdgeState() for _ in range(self.n_agents)])  # log all agents' states
+
+        self.n_requests = 0  # number of requests of each user in each time slot
+        self.request_popularity = None  # indices of users' requested models sorted by popularity in descending order
         # requests in the next time slot
-        self.requests_next = []
-        # number of requests in each time slot
-        self.n_requests = 0
+        self.requests_next: np.array = None
 
         # number of steps
         self.n_steps = 0
         self.max_steps = 0
 
-        self.valid_content_indices = []
-        self.legal_actions_mask = None
+        # 1-to-1 mapping between arrays of valid cache and integers as discrete action in RL
+        self.cache2number = {}
+        self.number2cache = {}
+        self.n_caches = 0
 
-        # return all entities in the world
-
+    # return all entities in the world
     @property
     def entities(self):
         return self.agents
@@ -79,37 +118,55 @@ class EdgeWorld(object):
         return [agent for agent in self.agents if agent.action_callback is not None]
 
     # update requests state of the world
-    def step(self):
-        # update requests
-        self._deploy_requests(self.requests_next, self.agents)
-        # calculate the weighted number of requests
-        s = 0
-        for request in self.requests_next:
-            idx = request.id
-            s += self.content_sizes[idx]
+    def step(self, beta=1):
+        # update models popularity and cached models at each edge
+        self._update_popularity(beta)
+        self._update_cache()
         # generate requests of the next time slot
-        self.requests_next = generate_requests(num_types=self.n_contents, num_requests=self.n_requests)
+        self.requests_next = generate_requests(num_users=self.n_users, num_types=self.n_models,
+                                               num_requests=self.n_requests, orders=self.request_popularity)
         self.n_steps += 1
 
-        return s
+    # update the popularity by requests and edges' action
+    def _update_popularity(self, beta=1):
+        # clear the popularity and reward in the last time slot
+        for m, s in enumerate(self.global_state):
+            s.popularity = np.zeros(self.n_models)
+            self.agents[m].reward_s = 0
 
-    # deploy requests to agents according to their cached contents and locations
-    def _deploy_requests(self, requests: list, agents: List[EdgeAgent]):
-        for i, agent in enumerate(agents):
-            agent.state.request = np.zeros(self.n_contents, dtype=np.int8)
-            self.global_state[i].request = agent.state.request
+        # users determine offloading targets
+        for type_idx in range(self.n_models):  # j
+            for n, user in enumerate(self.users):  # n_agents
+                edge_reward = {}
+                for m, edge in enumerate(self.agents):  # b_{nj}
+                    model_idx = edge.action.a[type_idx]
+                    if model_idx > 0:
+                        model = self.models[type_idx][model_idx-1]  # b_{nj}j
+                        trans_delay = model.input_size / self.trans_rates_ie[n][m]
+                        inf_delay = model.inf_time_e
+                    else:
+                        model = self.models[type_idx][-1]
+                        trans_delay = model.input_size * (1/self.trans_rates_ie[n][m]+1/self.trans_rates_ec[m])
+                        inf_delay = model.inf_time_c
+                    acc = model.accuracy
+                    edge_reward[m] = beta * acc - (trans_delay + inf_delay)
+                user.target[type_idx] = min(edge_reward, key=edge_reward.get)
 
-        for request in requests:
-            id = request.id
-            dis_agent = {}
-            for i, agent in enumerate(agents):
-                if agent.action.a[id] == 0:
-                    continue
-                dis = np.linalg.norm(np.array(request.loc) - np.array(agent.location))
-                dis_agent[dis] = i
+                # calculate revenue of cache hit
+                agent_idx = user.target[type_idx]
+                self.global_state[agent_idx].popularity[type_idx] += self.requests_next[n][type_idx]
 
-            if dis_agent:
-                sorted_dict = dict(sorted(dis_agent.items()))
-                agent_id = list(sorted_dict.values())[0]
-                agents[agent_id].state.request[id] += 1
-                # self.global_state[agent_id].request[id] += 1
+        # calculate rewards and update popularity
+        for m, edge in enumerate(self.agents):
+            edge.reward_c = sum(edge.state.popularity)
+            self.global_state[m].popularity = self.global_state[m].popularity / sum(self.global_state[m].popularity)
+
+            for type_idx in range(self.n_models):
+                model_idx = edge.action.a[type_idx]
+                if model_idx != edge.state.cache[type_idx] and model_idx != 0:
+                    edge.reward_s += self.models[type_idx] [model_idx-1]
+
+    # update cached dnns for a particular agent
+    def _update_cache(self):
+        for m, s in enumerate(self.global_state):
+            s.cache = self.agents[m].action.a

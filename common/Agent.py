@@ -12,7 +12,7 @@ class Agent(object):
     A unified agent interface:
     - interact: interact with the environment to collect experience
         - _take_one_step: take one step
-        - _take_n_steps: take n steps
+        - _take_n_steps: take n_agents steps
         - _discount_reward: discount roll out rewards
     - train: train on a sample batch
         - _soft_update_target: soft update the target network
@@ -36,7 +36,7 @@ class Agent(object):
         self.env = env
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.n_agents = env.n
+        self.n_agents = env.n_agents
         self.env_state = self.env.reset()
         self.n_episodes = 0
         self.n_steps = 0
@@ -100,7 +100,7 @@ class Agent(object):
         self.n_steps += 1
         self.memory.push(state, action, reward, next_state, done)
 
-    # take n steps
+    # take n_agents steps
     def _take_n_steps(self):
         if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
             self.env_state = self.env.reset()
@@ -108,7 +108,7 @@ class Agent(object):
         states = []
         actions = []
         rewards = []
-        # take n steps
+        # take n_agents steps
         for i in range(self.roll_out_n_steps):
             states.append(self.env_state)
             action = self.exploration_action(self.env_state)
@@ -160,7 +160,7 @@ class Agent(object):
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
                   np.exp(-1. * self.n_episodes / self.epsilon_decay)
         if np.random.rand() < epsilon:
-            action = np.random.choice(self.env.legal_actions, self.env.n)
+            action = np.random.choice(self.env.n_actions, self.env.n_agents)
         else:
             action = self.action(state)
         return action

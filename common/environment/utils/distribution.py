@@ -14,45 +14,30 @@ class Request(object):
 
 
 # Generate a list of numbers which follow the zipf distribution
-def generate_zipf(num_types, param, num_samples):
+def generate_zipf(num_types, param, num_samples, order=None):
     ranks = np.arange(num_types) + 1
     pdf = 1 / np.power(ranks, param)
     pdf /= sum(pdf)
 
     # Draw samples
-    return np.random.choice(np.arange(num_types), num_samples, p=pdf)
+    if order is None:
+        order = np.arange(num_types)
+    return np.random.choice(order, num_samples, p=pdf)
 
 
-# Generate a list of tuples which follow the poisson point process
-def generate_ppp(x_low, x_high, y_low, y_high, param):
-    # area = abs(x_high-x_low) * abs(y_high-y_low)
-    num = np.random.poisson(param)
-    x, y = np.random.uniform(x_low, x_high, num), np.random.uniform(y_low, y_high, num)
-    return np.c_[x, y]
+# Generate the number of requests {q_nj}
+def generate_requests(num_users=10, num_types=5, num_requests=10, zipf_param=0.6, orders=None) -> np.array:
+    requests = np.zeros((num_users, num_types))
+    if orders is None:
+        orders = np.tile(np.arange(num_types), (num_users, 1))
 
+    for i in range(num_users):
+        request_indices = generate_zipf(num_types, zipf_param, num_requests, orders[i])
+        values, counts = np.unique(request_indices, return_counts=True)
+        for v, c in zip(values, counts):
+            requests[i][v] = c
 
-# Generate a list of requests where each request is of the form (o,x)
-def generate_requests(num_types=5, num_requests=10, zipf_param=0.8, x_low=0, x_high=10, y_low=0,
-                      y_high=10):
-    request_indices = generate_zipf(num_types, zipf_param, num_requests)
-    # request_indices = np.zeros(num_requests)
-
-    ppp_params = [np.count_nonzero(request_indices == i) for i in range(num_types)]
-    ordered_indices = np.arange(num_types)
-    # each param in params is of the form [index,density]
-    params = np.c_[ordered_indices, ppp_params]
-
-    # param is of the form [index,density]
-    # return a list of requests
-    def generate_tuples(param):
-        # positions = generate_ppp(x_low, x_high, y_low, y_high, param[1])
-        x, y = np.random.uniform(x_low, x_high, param[1]), np.random.uniform(y_low, y_high, param[1])
-        positions = np.c_[x, y]
-
-        return [Request(param[0], p) for p in positions]
-
-    return [request for requests in [generate_tuples(p) for p in params] for request in requests]
-    # return generate_tuples(params[0])
+    return requests
 
 
 # Generate sizes of contents following Pareto distribution
@@ -60,6 +45,6 @@ def generate_content_sizes(n=50, mean=1, mini=0.5):
     # shape parameter (a) = 2, scale parameter (x_m)
     # mean = a * x_m / (a - 1) if a > 1
     # classical Pareto distribution can be obtained by
-    # samples = (np.random.pareto(alpha, n) + 1) * x_m
+    # samples = (np.random.pareto(alpha, n_agents) + 1) * x_m
     a = mean / (mean - mini)
     return (np.random.pareto(a, n) + 1) * mini

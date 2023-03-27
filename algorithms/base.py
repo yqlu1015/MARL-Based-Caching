@@ -5,9 +5,6 @@ from torch.optim import Adam, RMSprop
 import numpy as np
 
 from common.Agent import Agent
-from common.Model import ActorNet
-from common.utils import identity, to_tensor
-from common.environment.utils.tool import int2binary, binary2int
 
 
 class Base(Agent):
@@ -36,7 +33,7 @@ class Base(Agent):
         super()._take_one_step()
 
     def action(self, state) -> np.ndarray:
-        action = np.random.choice(self.env.legal_actions, self.n_agents)
+        action = np.random.choice(self.env.n_actions, self.n_agents)
         return action
 
     def exploration_action(self, state) -> np.ndarray:

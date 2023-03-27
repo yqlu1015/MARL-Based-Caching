@@ -1,8 +1,7 @@
 import random
 
-from common.utils import agg_double_list, mean_mean_list
-from common.environment.Environment import EdgeMultiAgentEnv
-from common.environment.utils.tool import int2binary
+from common.utils import agg_double_list, mean_mean_list, identity
+from common.environment.Environment import EdgeMultiAgentEnv, action_values_softmax
 from algorithms.base import Base
 import time
 import numpy as np
@@ -12,7 +11,7 @@ import matplotlib.pyplot as plt
 
 DEVICE = th.device('cuda' if th.cuda.is_available() else 'cpu')
 
-MAX_EPISODES = 1000
+MAX_EPISODES = 40
 EPISODES_BEFORE_TRAIN = 20
 EVAL_EPISODES = 3
 EVAL_INTERVAL = 5
@@ -24,13 +23,14 @@ TARGET_TAU = 0.001  # target net's soft update parameter
 
 # steps for alternatively updating policies and mean actions
 ALTERNATE_UPDATE_STEPS = 1
-N_AGENTS = 8
-N_CONTENTS = 10  # default=50
+N_AGENTS = 2
+N_USERS = 10  # default=50
 N_REQUESTS = 6 * N_AGENTS  # default=12
-AGENT_CAPACITY = 2  # content size mean = 1 default=8
-AGENT_VIEW = 3
+AGENT_CAPACITY = 600  # content size mean = 1 default=8
+AGENT_VIEW = 1
 TEMPERATURE = 0.1
 REPLACEMENT_FACTOR = 1
+ACCURACY_FACTOR = 1
 
 MEMORY_CAPACITY = 50000
 BATCH_SIZE = 128
@@ -54,18 +54,18 @@ RANDOM_SEED = 2023
 
 
 def run(env_id: str, algo_id: str, algo_handle, actor_output_act=None, critic_output_act=None, add_random=True):
-    env = EdgeMultiAgentEnv(n_agents=N_AGENTS, n_contents=N_CONTENTS, agent_capacity=AGENT_CAPACITY,
+    env = EdgeMultiAgentEnv(n_agents=N_AGENTS, n_users=N_USERS, agent_capacity=AGENT_CAPACITY,
                             agent_view=AGENT_VIEW, n_requests=N_REQUESTS, max_steps=MAX_STEPS, temperature=TEMPERATURE,
-                            replacement_factor=REPLACEMENT_FACTOR, device=DEVICE)
-    env_eval = EdgeMultiAgentEnv(n_agents=N_AGENTS, n_contents=N_CONTENTS, agent_capacity=AGENT_CAPACITY,
+                            eta=REPLACEMENT_FACTOR, beta=ACCURACY_FACTOR, device=DEVICE)
+    env_eval = EdgeMultiAgentEnv(n_agents=N_AGENTS, n_users=N_USERS, agent_capacity=AGENT_CAPACITY,
                                  n_requests=N_REQUESTS, max_steps=EVAL_MAX_STEPS, temperature=TEMPERATURE,
-                                 replacement_factor=REPLACEMENT_FACTOR, device=DEVICE)
-    state_dim = env.n * env.n_contents * 2
+                                 eta=REPLACEMENT_FACTOR, beta=ACCURACY_FACTOR, device=DEVICE)
+    state_dim = env.n_agents * env.n_models * 2
     action_dim = env.n_actions
     if actor_output_act is None:
-        actor_output_act = env.action_values_softmax
+        actor_output_act = action_values_softmax
     if critic_output_act is None:
-        critic_output_act = env.action_values_mask
+        critic_output_act = identity
     algo = algo_handle(env=env, state_dim=state_dim, action_dim=action_dim,
                        device=DEVICE, memory_capacity=MEMORY_CAPACITY, max_steps=MAX_STEPS, max_episodes=MAX_EPISODES,
                        reward_gamma=REWARD_DISCOUNTED_GAMMA, done_penalty=DONE_PENALTY,
@@ -111,12 +111,12 @@ def run(env_id: str, algo_id: str, algo_handle, actor_output_act=None, critic_ou
     random_infos = []
 
     print(f"env_id: {env_id}, algo_id: {algo_id}")
-    print(f"n_agents: {N_AGENTS}, n_contents: {N_CONTENTS}, n_requests: {N_REQUESTS}, " \
+    print(f"n_agents: {N_AGENTS}, n_users: {N_USERS}, n_requests: {N_REQUESTS}, "
           f"agent_capacity:{AGENT_CAPACITY}, agent_view:{AGENT_VIEW}")
     print(f"content sizes:\n{env.world.content_sizes}")
-    print(f"legal caching actions: ({len(env.legal_actions)} in total)")
+    print(f"legal caching actions: ({len(env.n_actions)} in total)")
     # for a in env.legal_actions:
-    #     print(int2binary(a, env.n_contents))
+    #     print(int2binary(a, env.n_models))
 
     interact_start_time = start_time = time.time()
     # cnt = 0
@@ -205,7 +205,7 @@ def run(env_id: str, algo_id: str, algo_handle, actor_output_act=None, critic_ou
     df.to_csv("./output/%s_%s_%s.csv" % (time_str, env_id, algo_id), index=False, float_format='%.4f')
 
     parameters = f"env_id: {env_id}, algo_id: {algo_id}, random seed: {RANDOM_SEED},\n" \
-                 f"n_agents: {N_AGENTS},\nn_contents: {N_CONTENTS},\nn_requests: {N_REQUESTS},\n" \
+                 f"n_agents: {N_AGENTS},\nn_users: {N_USERS},\nn_requests: {N_REQUESTS},\n" \
                  f"agent_capacity: {AGENT_CAPACITY},\nagent_view: {AGENT_VIEW},\n" \
                  f"replacement factor: {REPLACEMENT_FACTOR},\n" \
                  f"actor_hidden_size: {ACTOR_HIDDEN_SIZE}, critic_hidden_size: {CRITIC_HIDDEN_SIZE},\n" \
