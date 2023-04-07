@@ -6,12 +6,11 @@ from gym import spaces
 import math
 import numpy as np
 import torch as th
-from Core import EdgeAgent, EdgeWorld, User, Model
-from utils.distribution import generate_requests
-from utils.tool import states2array, cache2str
+from common.environment.Core import EdgeState, EdgeAgent, EdgeWorld, User, Model
+from common.environment.utils.distribution import generate_requests
+from common.environment.utils.tool import states2array, normalize
 
 from numpy import ndarray
-from torch import Tensor
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -22,18 +21,20 @@ class EdgeMultiAgentEnv(gym.Env):
     }
 
     def __init__(self, n_agents=100, n_users=30, agent_capacity=100, agent_view=1, n_requests=1000, max_steps=10000,
-                 temperature=0.1, eta=1, beta=1, device='cpu'):
-
+                 temperature=0.1, eta=1, beta=1, seed=2023, zipf_param=0.8):
+        np.random.seed(seed)
         self.world = make_world(n_agents=n_agents, agent_view=agent_view, agent_capacity=agent_capacity,
-                                n_users=n_users, n_requests=n_requests, max_steps=max_steps)
+                                n_users=n_users, n_requests=n_requests, max_steps=max_steps, zipf_param=zipf_param)
         self.agents = self.world.policy_agents
+        self.agents_loc = np.array([agent.location for agent in self.world.agents])
+        self.users_loc = np.array([user.loc for user in self.world.users])
         # number of controllable agents
         self.n_agents = len(self.world.policy_agents)
         assert self.n_agents == len(self.world.agents)
         # ndarray of legal actions represented by integers
         self.n_actions = self.world.n_caches
         self.num2action = self.world.number2cache
-        self.n_models = self.world.n_models
+        self.n_models = self.world.n_model_types
         self.n_users = self.world.n_users
         self.temperature = temperature
         self.eta = eta  # weight factor for switch cost
@@ -63,7 +64,7 @@ class EdgeMultiAgentEnv(gym.Env):
         # update the agent's new state and global state
         self.world.step(self.beta)
 
-        rewards_c, rewards_s = self.get_rewards_resp()
+        rewards_c, rewards_s = self._get_rewards_resp()
 
         for i, agent in enumerate(self.agents):
             reward_n[i] = self._get_reward(agent)
@@ -74,20 +75,8 @@ class EdgeMultiAgentEnv(gym.Env):
 
         return state, reward_n, done_n, info
 
-    # return a formatted string of the global states
-    def state_info(self) -> str:
-        res = f"{'AGENT ID':>4}  {'CACHE':>{2 * self.n_models - 1}}  {'REQUEST':>{2 * self.n_models - 1}}"
-        for i in range(self.n_agents):
-            cache = self.world.global_state[i].cache
-            cache_str = ','.join(str(j) for j in cache)
-            request = self.world.global_state[i].request
-            request_str = ','.join(str(j) for j in request)
-            res += f"\n{i:8d}  {cache_str}  {request_str}"
-
-        return res
-
     # return the rewards of cache hit and switch cost of each agent respectively
-    def get_rewards_resp(self) -> Tuple[ndarray, ndarray]:
+    def _get_rewards_resp(self) -> Tuple[ndarray, ndarray]:
         cache = np.zeros(self.n_agents)
         switch_cost = np.zeros(self.n_agents)
 
@@ -127,15 +116,43 @@ class EdgeMultiAgentEnv(gym.Env):
     def seed(self, seed=None):
         pass
 
+    # return a formatted string of the global states
+    def state_info(self) -> str:
+        res = f"{'AGENT':>4}  {'CACHE':>{2 * self.n_models - 1}}  {'POPULARITY':>{5 * self.n_models - 1}}"
+        for i in range(self.n_agents):
+            cache = self.world.global_state[i].cache
+            cache_str = ','.join(str(j) for j in cache)
+            popularity = self.world.global_state[i].popularity
+            popularity_str = ','.join("{:.2f}".format(j) for j in popularity)
+            res += f"\n{i:8d}  {cache_str}  {popularity_str}"
+
+        return res
+
+    # return users' information
+    def users_info(self) -> str:
+        res = f"{'USER':>4} {'Target':>{2 * self.n_models - 1}} {'Accuracy (%)':>{5 * self.n_models - 1}} " \
+              f"{'Transmission Delay (s)':>{5 * self.n_models - 1}} {'Inference Time (s)':>{5 * self.n_models - 1}}"
+        for i in range(self.n_users):
+            target = self.world.users[i].target
+            target_str = ','.join(str(t) for t in target)
+            acc = self.world.users[i].accuracy
+            acc_str = ','.join("{:.1f}".format(a) for a in acc)
+            trans = self.world.users[i].trans_delay
+            trans_str = ','.join("{:.1f}".format(t) for t in trans)
+            inf = self.world.users[i].inf_delay
+            inf_str = ','.join("{:.1f}".format(i) for i in inf)
+            res += f"\n{i:4d}  {target_str}  {acc_str}  {trans_str}  {inf_str}"
+
+        return res
+
 
 # helper functions
 def make_world(shape_size=np.array([1000, 1000]), n_agents=100, agent_view=1, agent_capacity=20, n_users=10,
-               n_requests=1000, max_steps=10000) -> EdgeWorld:
-    assert agent_view < n_agents, "agent view must be smaller than the number of agents"
-    world = EdgeWorld()
+               n_requests=1000, max_steps=10000, zipf_param=0.8) -> EdgeWorld:
+    world = EdgeWorld(n_agents=n_agents, n_users=n_users)
     world.shape_size = shape_size
-    world.agent_view_sight = agent_view
-    world.n_agents = n_agents
+
+    world.agent_view_sight = min(agent_view, n_agents-1)
     world.agent_storage = agent_capacity
     world.agents = [EdgeAgent(capacity=world.agent_storage, view_sight=world.agent_view_sight, id=i)
                     for i in range(n_agents)]
@@ -145,23 +162,24 @@ def make_world(shape_size=np.array([1000, 1000]), n_agents=100, agent_view=1, ag
     for agent in world.agents:
         calc_mask(agent, world)
 
-    world.n_models = 10
-    world.models = models
-    for i, model_type in enumerate(models):
+    world.n_model_types = len(models)
+    world.models = [row[::-1] for row in models]
+    for i, model_type in enumerate(world.models):
+        world.n_models += len(model_type)
+        world.model_input_sizes.append(model_type[0].input_size)
         world.model_sizes.append([])
         for model in model_type:
             world.model_sizes[i].append(model.size)
+        world.model_sizes[i] = normalize(world.model_sizes[i])
 
-    world.n_users = n_users
-    world.users = [User(user_id=i, loc=np.random.random(2) * world.shape_size, models_num=world.n_models)
+    world.users = [User(user_id=i, loc=np.random.random(2) * world.shape_size, models_num=world.n_model_types)
                    for i in range(n_users)]
     calc_trans_rate(world)
 
     world.n_requests = n_requests
     # random order of model types
-    world.request_popularity = np.array([np.random.permutation(world.n_models) for _ in range(n_users)])
-    world.requests_next = generate_requests(num_users=n_users, num_types=world.n_models,
-                                            num_requests=n_requests, orders=world.request_popularity)
+    world.request_popularity = np.tile(np.arange(world.n_model_types), (n_users, 1))
+    world.zipf_param = zipf_param
 
     world.max_steps = max_steps
 
@@ -178,7 +196,10 @@ def reset_world(world: EdgeWorld):
     world.n_steps = 0
     for s in world.global_state:
         s.cache = world.number2cache[np.random.choice(world.n_caches)]
-        s.popularity = np.zeros(world.n_models)
+        s.popularity = np.zeros(world.n_model_types)
+    world.requests_next = generate_requests(num_users=world.n_users, num_types=world.n_model_types,
+                                            num_low=int(world.n_requests*0.8), num_high=int(world.n_requests*1.2),
+                                            orders=world.request_popularity,zipf_param=world.zipf_param)
 
 
 # set env action for a particular agent
@@ -210,14 +231,12 @@ def calc_mask(agent: EdgeAgent, world: EdgeWorld):
 
 # calculate all valid caches that will not exceed storage space of the edge and set the mapping between number and cache
 def calc_valid_caches(world: EdgeWorld):
-    zeros = np.zeros(world.n_models)
+    zeros = np.zeros(world.n_model_types, dtype=np.int32)
     caches_list = []
-    subset_sum(world.model_sizes, world.agent_storage, zeros, world.n_models, caches_list)
+    subset_sum(world.model_sizes, world.agent_storage, zeros, world.n_model_types, caches_list)
     caches_list = np.array(caches_list)
     for i, cache in enumerate(caches_list):
-        world.number2cache[i] = cache
-        cache_str = cache2str(cache)
-        world.cache2number[cache_str] = i
+        world.number2cache.append(cache)
 
 
 # def legal_actions(world: EdgeWorld) -> th.Tensor:
@@ -249,10 +268,10 @@ def subset_sum(numbers, limit, partial, original_len, res=[]):
 
 # calculate the transmission rates in the system in Mbps
 def calc_trans_rate(world: EdgeWorld):
-    bandwidth = 1  # MHz
+    bandwidth = 10  # MHz from UAV
     wave_length = 0.1  # m
-    noise_power = math.pow(10, -17.4) * 1e-3  # -174dBm
-    send_power = 0.2  # W
+    noise_power = math.pow(10, -17.4) * 1e3 * bandwidth  # -174dBm/Hz from gao
+    send_power = 0.2  # W from UAV
 
     channel_gain_const = (wave_length / (4 * math.pi)) ** 2
     for i, user in enumerate(world.users):
@@ -262,7 +281,7 @@ def calc_trans_rate(world: EdgeWorld):
             world.trans_rates_ie[i][j] = bandwidth * math.log2(1 + send_power * channel_gain / noise_power)
 
     for i in range(world.n_agents):
-        world.trans_rates_ec[i] = 150  # Mbps
+        world.trans_rates_ec[i] = 10  # Mbps from UAV
 
 
 # multi-agent environment
@@ -276,48 +295,73 @@ def action_values_softmax(action_values: th.Tensor) -> th.Tensor:
 # model list
 models = [
     [
-        Model(name='AlexNet', type_id=0, accuracy=56.522, model_size=233.1, time_c=0.25, time_e=10.1, input_size=25.17)
+        Model(name='ResNet-50', type='Type 1', accuracy=76.13, model_size=97.8, time_c=0.51, time_e=9.52,
+              input_size=1204.22),
+        Model(name='ResNet-101', type='Type 1', accuracy=77.374, model_size=170.5, time_c=0.78, time_e=14.9,
+              input_size=1204.22),
+        Model(name='ResNet-152', type='Type 1', accuracy=78.312, model_size=230.4, time_c=1.03, time_e=20.72,
+              input_size=1204.22)
     ],
     [
-        Model(name='VGG-11', type_id=1, accuracy=69.02, model_size=506.8, time_c=0.24, time_e=10.36, input_size=25.17),
-        Model(name='VGG-13', type_id=1, accuracy=69.928, model_size=507.5, time_c=0.28, time_e=10.51, input_size=25.17),
-        Model(name='VGG-16', type_id=1, accuracy=71.592, model_size=527.8, time_c=0.28, time_e=11.29, input_size=25.17),
-        Model(name='VGG-19', type_id=1, accuracy=72.376, model_size=548.1, time_c=0.32, time_e=9.59, input_size=25.17),
-        Model(name='VGG-11_BN', type_id=1, accuracy=70.37, model_size=506.9, time_c=0.27, time_e=13.17,
-              input_size=25.17),
-        Model(name='VGG-13_BN', type_id=1, accuracy=71.586, model_size=507.6, time_c=0.27, time_e=14.82,
-              input_size=25.17),
-        Model(name='VGG-16_BN', type_id=1, accuracy=73.36, model_size=527.9, time_c=0.29, time_e=12.76,
-              input_size=25.17),
-        Model(name='VGG-19_BN', type_id=1, accuracy=74.218, model_size=548.1, time_c=0.34, time_e=14.97,
-              input_size=25.17)
+        Model(name='ResNet-18', type='Type 2', accuracy=69.758, model_size=44.7, time_c=0.38, time_e=6.07,
+              input_size=1204.22),
+        Model(name='ResNet-34', type='Type 2', accuracy=73.314, model_size=83.3, time_c=0.56, time_e=9.08,
+              input_size=1204.22),
     ],
     [
-        Model(name='ResNet-18', type_id=2, accuracy=69.758, model_size=44.7, time_c=0.38, time_e=6.07,
-              input_size=25.17),
-        Model(name='ResNet-34', type_id=2, accuracy=73.314, model_size=83.3, time_c=0.56, time_e=9.08,
-              input_size=25.17),
-        Model(name='ResNet-50', type_id=2, accuracy=76.13, model_size=97.8, time_c=0.51, time_e=9.52,
-              input_size=25.17),
-        Model(name='ResNet-101', type_id=2, accuracy=77.374, model_size=170.5, time_c=0.78, time_e=14.9,
-              input_size=25.17),
-        Model(name='ResNet-152', type_id=2, accuracy=78.312, model_size=230.4, time_c=1.03, time_e=20.72,
-              input_size=25.17)
+        Model(name='ResNeXt-50(32x4d)', type='Type 3', accuracy=77.618, model_size=95.8, time_c=0.67, time_e=14.76,
+              input_size=1204.22),
+        Model(name='ResNeXt-101(32x8d)', type='Type 3', accuracy=79.312, model_size=339.6, time_c=0.67, time_e=35.69,
+              input_size=1204.22),
     ],
     [
-        Model(name='SqueezeNet-v1.0', type_id=3, accuracy=58.092, model_size=4.8, time_c=1.98, time_e=2.04,
-              input_size=25.17),
-        Model(name='SqueezeNet-v1.1', type_id=3, accuracy=58.178, model_size=4.7, time_c=2.27, time_e=8.56,
-              input_size=25.17)
+        Model(name='VGG-11', type='Type 4', accuracy=69.02, model_size=506.8, time_c=0.24, time_e=10.36,
+              input_size=1204.22),
+        Model(name='VGG-13', type='Type 4', accuracy=69.928, model_size=507.5, time_c=0.28, time_e=10.51,
+              input_size=1204.22),
+        Model(name='VGG-16', type='Type 4', accuracy=71.592, model_size=507.8, time_c=0.28, time_e=11.29,
+              input_size=1204.22),
+        Model(name='VGG-19', type='Type 4', accuracy=72.376, model_size=508.1, time_c=0.32, time_e=9.59,
+              input_size=1204.22)
     ],
     [
-        Model(name='DenseNet-121', type_id=4, accuracy=74.434, model_size=30.8, time_c=1.93, time_e=20.18,
-              input_size=25.17),
-        Model(name='DenseNet-169', type_id=4, accuracy=75.6, model_size=54.7, time_c=2.90, time_e=29.89,
-              input_size=25.17),
-        Model(name='DenseNet-201', type_id=4, accuracy=76.896, model_size=77.4, time_c=3.98, time_e=41.25,
-              input_size=25.17),
-        Model(name='DenseNet-161', type_id=4, accuracy=77.138, model_size=110.4, time_c=2.19, time_e=33.28,
-              input_size=25.17)
+        Model(name='VGG-11_BN', type='Type 5', accuracy=70.37, model_size=506.9, time_c=0.27, time_e=13.17,
+              input_size=1204.22),
+        Model(name='VGG-13_BN', type='Type 5', accuracy=71.586, model_size=507.6, time_c=0.27, time_e=14.82,
+              input_size=1204.22),
+        Model(name='VGG-16_BN', type='Type 5', accuracy=73.36, model_size=527.9, time_c=0.29, time_e=12.76,
+              input_size=1204.22),
+        Model(name='VGG-19_BN', type='Type 5', accuracy=74.218, model_size=548.1, time_c=0.34, time_e=14.97,
+              input_size=1204.22)
+    ],
+    [
+        Model(name='DenseNet-121', type='Type 6', accuracy=74.434, model_size=30.8, time_c=1.93, time_e=20.18,
+              input_size=1204.22),
+        Model(name='DenseNet-169', type='Type 6', accuracy=75.6, model_size=54.7, time_c=2.90, time_e=29.89,
+              input_size=1204.22)
+    ],
+    [
+        Model(name='DenseNet-201', type='Type 7', accuracy=76.896, model_size=77.4, time_c=3.98, time_e=41.25,
+              input_size=1204.22),
+        Model(name='DenseNet-161', type='Type 7', accuracy=77.138, model_size=110.4, time_c=2.19, time_e=33.28,
+              input_size=1204.22)
+    ],
+    [
+        Model(name='Inception-v1', type='Type 8', accuracy=69.778, model_size=49.7, time_c=2.91, time_e=17.77,
+              input_size=2145.6),
+        Model(name='Inception-v3', type='Type 8', accuracy=77.294, model_size=103.9, time_c=4.21, time_e=86.44,
+              input_size=2145.6)
+    ],
+    [
+        Model(name='SqueezeNet-v1.0', type='Type 9', accuracy=58.092, model_size=4.8, time_c=1.98, time_e=2.04,
+              input_size=1236.7),
+        Model(name='SqueezeNet-v1.1', type='Type 9', accuracy=58.178, model_size=4.7, time_c=2.27, time_e=8.56,
+              input_size=1236.7)
+    ],
+    [
+        Model(name='MNASNet-0.5', type='Type 10', accuracy=67.734, model_size=86., time_c=2.5, time_e=18.1,
+              input_size=1204.22),
+        Model(name='MNASNet-1.0', type='Type 10', accuracy=73.456, model_size=169., time_c=3.49, time_e=28.1,
+              input_size=1204.22)
     ]
 ]

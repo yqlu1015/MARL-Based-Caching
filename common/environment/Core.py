@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List
 
-from utils.distribution import generate_requests
+from common.environment.utils.distribution import generate_requests
 
 
 class EdgeState(object):
@@ -41,10 +41,10 @@ class EdgeAgent(object):
 
 # DNN model
 class Model(object):
-    def __init__(self, name: str, type_id: int, accuracy: float, model_size: float, time_c: float, time_e: float,
+    def __init__(self, name: str, type: str, accuracy: float, model_size: float, time_c: float, time_e: float,
                  input_size: float):
         self.name = name
-        self.id = type_id  # the same type of dnn models share the same type_id, e.g. resnet18, resnet34
+        self.type = type  # the same type of dnn models share the same type_id, e.g. resnet18, resnet34
         self.accuracy = accuracy  # top-1 accuracy
         self.size = model_size  # MB
         self.inf_time_c = time_c  # s
@@ -57,28 +57,33 @@ class User(object):
     def __init__(self, user_id, loc=np.array([0, 0]), models_num=10):
         self.id = user_id
         self.loc = loc
-        self.target = np.zeros(models_num)
+        self.target = np.zeros(models_num, dtype=np.int)
+        self.accuracy = np.zeros(models_num, dtype=np.float32)  # %
+        self.trans_delay = np.zeros(models_num, dtype=np.float32)  # s
+        self.inf_delay = np.zeros(models_num, dtype=np.float32)  # s
 
 
 class EdgeWorld(object):
-    def __init__(self):
+    def __init__(self, n_agents=10, n_users=30):
         # shape of the world, i.e. area covered by all edges
         self.shape_size = [0, 0]
 
         # list of agents (can change at execution-time!)
         self.agents: List[EdgeAgent] = []
-        self.n_agents = 0
+        self.n_agents = n_agents
         self.agent_view_sight = 1
         self.agent_storage = 0
 
         # list of dnn models
         self.models: List[List[Model]] = []
+        self.n_model_types = 0
         self.n_models = 0
         self.model_sizes = []
+        self.model_input_sizes = []
 
         # list of iot devices
         self.users: List[User] = []
-        self.n_users = 0
+        self.n_users = n_users
 
         # transmission rate from IoTDs to edge servers
         self.trans_rates_ie = np.zeros((self.n_users, self.n_agents))
@@ -86,7 +91,7 @@ class EdgeWorld(object):
         self.trans_rates_ec = np.zeros(self.n_agents)
 
         # state information
-        self.global_state = np.array([EdgeState() for _ in range(self.n_agents)])  # log all agents' states
+        self.global_state: np.ndarray[EdgeState] = np.array([EdgeState() for _ in range(n_agents)])  # log all agents' states
 
         self.n_requests = 0  # number of requests of each user in each time slot
         self.request_popularity = None  # indices of users' requested models sorted by popularity in descending order
@@ -98,9 +103,13 @@ class EdgeWorld(object):
         self.max_steps = 0
 
         # 1-to-1 mapping between arrays of valid cache and integers as discrete action in RL
-        self.cache2number = {}
-        self.number2cache = {}
+        self.number2cache = []
         self.n_caches = 0
+        self.cache_stat: np.array = None  # number of caches of each model in one episode
+        self.average_delay = 0.  # average delay of each model type, each user
+        self.cache_hit_ratio = 0.  # defined as (# requests served by edges/ # requests)
+
+        self.zipf_param = 0.8
 
     # return all entities in the world
     @property
@@ -121,23 +130,30 @@ class EdgeWorld(object):
     def step(self, beta=1):
         # update models popularity and cached models at each edge
         self._update_popularity(beta)
+        self._update_stat()
         self._update_cache()
         # generate requests of the next time slot
-        self.requests_next = generate_requests(num_users=self.n_users, num_types=self.n_models,
-                                               num_requests=self.n_requests, orders=self.request_popularity)
+        self.requests_next = generate_requests(num_users=self.n_users, num_types=self.n_model_types,
+                                               num_low=int(self.n_requests*0.8), num_high=int(self.n_requests*1.2),
+                                               orders=self.request_popularity, zipf_param=self.zipf_param)
         self.n_steps += 1
 
     # update the popularity by requests and edges' action
     def _update_popularity(self, beta=1):
         # clear the popularity and reward in the last time slot
         for m, s in enumerate(self.global_state):
-            s.popularity = np.zeros(self.n_models)
+            s.popularity = np.zeros(self.n_model_types)
             self.agents[m].reward_s = 0
+            self.agents[m].reward_c = 0
+        self.cache_hit_ratio = 0.
 
         # users determine offloading targets
-        for type_idx in range(self.n_models):  # j
+        for type_idx in range(self.n_model_types):  # j
             for n, user in enumerate(self.users):  # n_agents
                 edge_reward = {}
+                edge_acc = {}
+                edge_trans = {}
+                edge_inf = {}
                 for m, edge in enumerate(self.agents):  # b_{nj}
                     model_idx = edge.action.a[type_idx]
                     if model_idx > 0:
@@ -145,12 +161,19 @@ class EdgeWorld(object):
                         trans_delay = model.input_size / self.trans_rates_ie[n][m]
                         inf_delay = model.inf_time_e
                     else:
-                        model = self.models[type_idx][-1]
+                        model = self.models[type_idx][0]
                         trans_delay = model.input_size * (1/self.trans_rates_ie[n][m]+1/self.trans_rates_ec[m])
                         inf_delay = model.inf_time_c
                     acc = model.accuracy
                     edge_reward[m] = beta * acc - (trans_delay + inf_delay)
-                user.target[type_idx] = min(edge_reward, key=edge_reward.get)
+                    edge_acc[m] = acc
+                    edge_trans[m] = trans_delay
+                    edge_inf[m] = inf_delay
+                edge_idx = max(edge_reward, key=edge_reward.get)
+                user.target[type_idx] = edge_idx
+                user.accuracy[type_idx] = edge_acc[edge_idx]
+                user.trans_delay[type_idx] = edge_trans[edge_idx]
+                user.inf_delay[type_idx] = edge_inf[edge_idx]
 
                 # calculate revenue of cache hit
                 agent_idx = user.target[type_idx]
@@ -158,15 +181,37 @@ class EdgeWorld(object):
 
         # calculate rewards and update popularity
         for m, edge in enumerate(self.agents):
-            edge.reward_c = sum(edge.state.popularity)
-            self.global_state[m].popularity = self.global_state[m].popularity / sum(self.global_state[m].popularity)
+            edge.reward_c = sum(self.global_state[m].popularity * (edge.action.a != 0) * self.model_input_sizes) / 1000
+            self.cache_hit_ratio += sum(self.global_state[m].popularity * (edge.action.a != 0))
+            norm = np.linalg.norm(self.global_state[m].popularity, 1)
+            if norm != 0:
+                self.global_state[m].popularity = self.global_state[m].popularity / norm
 
-            for type_idx in range(self.n_models):
+            for type_idx in range(self.n_model_types):
                 model_idx = edge.action.a[type_idx]
                 if model_idx != edge.state.cache[type_idx] and model_idx != 0:
-                    edge.reward_s += self.models[type_idx] [model_idx-1]
+                    edge.reward_s += self.model_sizes[type_idx][model_idx-1]
+
+        self.cache_hit_ratio /= sum(sum(self.requests_next))
 
     # update cached dnns for a particular agent
     def _update_cache(self):
         for m, s in enumerate(self.global_state):
             s.cache = self.agents[m].action.a
+
+    # update the statistics of model caches and average delay
+    def _update_stat(self):
+        self.cache_stat = np.zeros(self.n_models, dtype=np.int)
+        for edge in self.agents:
+            pre_cnt = 0
+            for i, cache in enumerate(edge.action.a):
+                if cache != 0:
+                    self.cache_stat[pre_cnt+cache-1] += 1
+                pre_cnt += len(self.models[i])
+
+        self.average_delay = 0.
+        for i, user in enumerate(self.users):
+            for type_idx in range(self.n_model_types):
+                self.average_delay += (user.inf_delay[type_idx] + user.trans_delay[type_idx])
+
+        self.average_delay /= (self.n_users * self.n_model_types)

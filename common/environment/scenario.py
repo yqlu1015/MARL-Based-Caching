@@ -20,7 +20,7 @@ class Scenario():
         world.content_sizes = generate_content_sizes(n=n_contents, mean=content_size_mean)
 
         world.global_state = np.array([agent.state for agent in world.agents])
-        world.requests_next = generate_requests(num_types=n_contents, num_requests=n_requests)
+        world.requests_next = generate_requests(num_types=n_contents, mean_num=n_requests)
         world.n_requests = n_requests
 
         world.max_steps = max_steps

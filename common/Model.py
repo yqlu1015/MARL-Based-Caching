@@ -99,24 +99,17 @@ class MeanCriticNet(nn.Module):
 
     def __init__(self, state_dim, action_dim, mid_dim, output_size, output_act):
         super().__init__()
-        # self.net = nn.Sequential(
-        #     nn.Linear(state_dim + 1 + action_dim, mid_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(mid_dim, mid_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(mid_dim, mid_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(mid_dim, output_size),
-        # ).double()
+        self.fc0 = nn.Linear(action_dim, mid_dim)
         self.fc1 = nn.Linear(state_dim, mid_dim)
-        self.fc2 = nn.Linear(action_dim + mid_dim, mid_dim)
+        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
         self.fc3 = nn.Linear(mid_dim, output_size)
         self.activate = nn.ReLU()
         self.output_act = output_act
 
     def forward(self, state, mean_action):
-        out = self.activate(self.fc1(state))
-        out = th.cat((out, mean_action), 1)
+        action_dense = self.activate(self.fc0(mean_action))
+        state_dense = self.activate(self.fc1(state))
+        out = th.cat((state_dense, action_dense), 1)
         out = self.activate(self.fc2(out))
         out = self.fc3(out)
         out = self.output_act(out)
@@ -130,16 +123,17 @@ class MeanQNet(nn.Module):
 
     def __init__(self, state_dim, action_dim, mid_dim, output_size, output_act):
         super().__init__()
+        self.fc0 = nn.Linear(action_dim, mid_dim)
         self.fc1 = nn.Linear(state_dim, mid_dim)
-        self.fc2 = nn.Linear(mid_dim + action_dim, mid_dim)
+        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
         self.fc3 = nn.Linear(mid_dim, output_size)
         self.activate = nn.ReLU()
         self.output_act = output_act
 
     def forward(self, state, mean_action):
-        out = self.activate(self.fc1(state))
-        # actions = self.activate(self.fc2(mean_action))
-        out = th.cat((out, mean_action), 1)
+        action_dense = self.activate(self.fc0(mean_action))
+        state_dense = self.activate(self.fc1(state))
+        out = th.cat((state_dense, action_dense), 1)
         out = self.activate(self.fc2(out))
         out = self.fc3(out)
         out = self.output_act(out)

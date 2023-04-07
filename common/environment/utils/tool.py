@@ -41,9 +41,10 @@ def seed_everything(seed):
     th.manual_seed(seed)
 
 
-def cache2str(cache) -> str:
-    s = ''
-    for c in cache:
-        s = s + str(c) + '-'
-
-    return s
+# scale a list to reduce the relative difference between each two values
+def normalize(x):
+    x = np.array(x)
+    y = (x-np.min(x)) / (np.max(x)-np.min(x))
+    e_y = np.exp(y)
+    res = e_y / np.sum(e_y) * len(e_y)
+    return res

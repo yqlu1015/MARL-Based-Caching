@@ -23,7 +23,7 @@ class Agent(object):
     - evaluation: evaluation a learned agent
     """
     def __init__(self, env: EdgeMultiAgentEnv, state_dim, action_dim, device='cpu',
-                 memory_capacity=10000, max_steps=10000, max_episodes=400,
+                 memory_capacity=10000, max_steps=10000,
                  reward_gamma=0.99, reward_scale=1., done_penalty=None,
                  actor_hidden_size=32, critic_hidden_size=32,
                  actor_output_act=None, critic_output_act=None,
@@ -41,7 +41,6 @@ class Agent(object):
         self.n_episodes = 0
         self.n_steps = 0
         self.max_steps = max_steps
-        self.max_episodes = max_episodes
         self.roll_out_n_steps = 1
 
         self.reward_gamma = reward_gamma
@@ -179,10 +178,17 @@ class Agent(object):
         infos = []
         rewards_cache = []
         rewards_switch = []
+        users_info = []
+        stats = {}
+        stats['cache'] = []
+        stats['delay'] = []
+        stats['ratio'] = []
+        average_delays = []
         # seed_everything(seed)
 
         for i in range(eval_episodes):
             self.mean_actions_e = copy.deepcopy(self.mean_actions)
+            stats['delay'] = []
             rewards_i = []
             rewards_cache_i = []
             rewards_switch_i = []
@@ -194,6 +200,8 @@ class Agent(object):
             rewards_i.append(reward)
             rewards_cache_i.append(info[0])
             rewards_switch_i.append(info[1])
+            stats['delay'].append(env.world.average_delay)
+            stats['ratio'].append(env.world.cache_hit_ratio)
 
             while not done:
                 action = self.action(state)
@@ -203,9 +211,14 @@ class Agent(object):
                 rewards_i.append(reward)
                 rewards_cache_i.append(info[0])
                 rewards_switch_i.append(info[1])
+                stats['delay'].append(env.world.average_delay)
+                stats['ratio'].append(env.world.cache_hit_ratio)
 
             rewards.append(rewards_i)
             rewards_cache.append(rewards_cache_i)
             rewards_switch.append(rewards_switch_i)
             infos.append(env.state_info())
-        return rewards, infos, rewards_cache, rewards_switch
+            users_info.append(env.users_info())
+            stats['cache'].append(env.world.cache_stat)
+
+        return rewards, infos, rewards_cache, rewards_switch, users_info, stats

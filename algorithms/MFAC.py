@@ -22,11 +22,11 @@ class MFAC(Agent):
                  max_grad_norm=0.5, batch_size=1000, episodes_before_train=100,
                  epsilon_start=0.9, epsilon_end=0.01, epsilon_decay=200,
                  target_tau=0.01, target_update_step=10, seed=0):
-        super().__init__(env, state_dim, action_dim, device, memory_capacity, max_steps, max_episodes, reward_gamma,
-                         reward_scale, done_penalty, actor_hidden_size, critic_hidden_size, actor_output_act,
-                         critic_output_act, critic_loss, actor_lr, critic_lr, optimizer_type, entropy_reg,
-                         max_grad_norm, batch_size, episodes_before_train, epsilon_start, epsilon_end, epsilon_decay,
-                         target_tau, target_update_step)
+        super().__init__(env, state_dim, action_dim, device, memory_capacity, max_steps, reward_gamma, reward_scale,
+                         done_penalty, actor_hidden_size, critic_hidden_size, actor_output_act, critic_output_act,
+                         critic_loss, actor_lr, critic_lr, optimizer_type, entropy_reg, max_grad_norm, batch_size,
+                         episodes_before_train, epsilon_start, epsilon_end, epsilon_decay, target_tau,
+                         target_update_step)
 
         self.actor = [
             ActorNet(self.state_dim, self.actor_hidden_size,
@@ -94,20 +94,9 @@ class MFAC(Agent):
         for i in range(self.n_agents):
 
             actions_index = actions_tensor[:, i]
-            # actions_list = [int2binary(idx.item(), self.env.n_models) for idx in actions_index]
-            # actions = to_tensor(actions_list, self.device)
             current_v = self.critic[i](states_tensor, mean_actions_tensor[:, i]).squeeze(1)
 
-            # compute mean field V(s')
-            # next_actions_prob = self.actor_target[i](next_states_tensor)
-            # next_actions_index = th.distributions.Categorical(next_actions_prob).sample()
-            # next_actions_list = [int2binary(idx.item(), self.env.n_models) for idx in next_actions_index]
-            # next_actions_tensor = to_tensor(next_actions_list, self.device)
             next_v = self.critic_target[i](next_states_tensor, mean_actions_tensor[:, i]).squeeze(1).detach()
-            # next_state_action_values = self.critic_target[i](next_states_tensor, mean_actions_tensor[:, i]).detach()
-            # actions_prob = self.actor_target[i](next_states_tensor).detach()
-            # next_v = th.einsum('bj,bj->b', next_state_action_values, actions_prob)
-            # compute target q by: r + gamma * max_a { V(s_{t+1}) }
             target_v = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
 
             # compute log action probs and target q
