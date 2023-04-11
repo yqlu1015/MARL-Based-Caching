@@ -6,7 +6,7 @@ from torch import nn
 
 class ActorNet(nn.Module):
     """
-    A network for actor
+    A network for qnet
     """
 
     def __init__(self, state_dim, mid_dim, output_size, output_act):
@@ -32,21 +32,24 @@ class ActorNet(nn.Module):
         return out
 
 
-class CriticNetwork(nn.Module):
+class CriticNet(nn.Module):
     """
     A network for critic
     """
 
-    def __init__(self, state_dim, action_dim, hidden_size, output_size=1):
-        super(CriticNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_dim, hidden_size)
-        self.fc2 = nn.Linear(hidden_size + action_dim, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, output_size)
+    def __init__(self, state_dim, action_dim, mid_dim, output_size=1):
+        super().__init__()
+        self.fc0 = nn.Linear(action_dim, mid_dim)
+        self.fc1 = nn.Linear(state_dim, mid_dim)
+        self.fc2 = nn.Linear(mid_dim * 2, mid_dim * 2)
+        self.fc3 = nn.Linear(mid_dim * 2, output_size)
+        self.activate = nn.ReLU()
 
     def forward(self, state, action):
-        out = nn.functional.relu(self.fc1(state))
-        out = th.cat([out, action], 1)
-        out = nn.functional.relu(self.fc2(out))
+        action_dense = self.activate(self.fc0(action))
+        state_dense = self.activate(self.fc1(state))
+        out = th.cat((state_dense, action_dense), 1)
+        out = self.activate(self.fc2(out))
         out = self.fc3(out)
         return out
 
@@ -92,7 +95,7 @@ class ActorCriticNetwork(nn.Module):
         return act, val
 
 
-class MeanCriticNet(nn.Module):
+class MeanValueNet(nn.Module):
     """
     A network for mf-ac with state, action and mean action as input
     """
@@ -101,8 +104,8 @@ class MeanCriticNet(nn.Module):
         super().__init__()
         self.fc0 = nn.Linear(action_dim, mid_dim)
         self.fc1 = nn.Linear(state_dim, mid_dim)
-        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
-        self.fc3 = nn.Linear(mid_dim, output_size)
+        self.fc2 = nn.Linear(mid_dim * 2, mid_dim * 2)
+        self.fc3 = nn.Linear(mid_dim * 2, output_size)
         self.activate = nn.ReLU()
         self.output_act = output_act
 
@@ -125,14 +128,39 @@ class MeanQNet(nn.Module):
         super().__init__()
         self.fc0 = nn.Linear(action_dim, mid_dim)
         self.fc1 = nn.Linear(state_dim, mid_dim)
-        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
-        self.fc3 = nn.Linear(mid_dim, output_size)
+        self.fc2 = nn.Linear(mid_dim * 2, mid_dim * 2)
+        self.fc3 = nn.Linear(mid_dim * 2, output_size)
         self.activate = nn.ReLU()
         self.output_act = output_act
 
     def forward(self, state, mean_action):
         action_dense = self.activate(self.fc0(mean_action))
         state_dense = self.activate(self.fc1(state))
+        out = th.cat((state_dense, action_dense), 1)
+        out = self.activate(self.fc2(out))
+        out = self.fc3(out)
+        out = self.output_act(out)
+        return out
+
+
+class MeanCriticNetDDPG(nn.Module):
+    """
+    A network for mf-ac with state, action and mean action as input
+    """
+
+    def __init__(self, state_dim, action_dim, mid_dim, output_size, output_act):
+        super().__init__()
+        self.fc0 = nn.Linear(action_dim, mid_dim)
+        self.fc1 = nn.Linear(state_dim + action_dim, mid_dim)
+        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
+        self.fc3 = nn.Linear(mid_dim, output_size)
+        self.activate = nn.ReLU()
+        self.output_act = output_act
+
+    def forward(self, state, action, mean_action):
+        action_dense = self.activate(self.fc0(mean_action))
+        state_action = th.cat((state, action), 1)
+        state_dense = self.activate(self.fc1(state_action))
         out = th.cat((state_dense, action_dense), 1)
         out = self.activate(self.fc2(out))
         out = self.fc3(out)

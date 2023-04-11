@@ -1,7 +1,9 @@
 import torch as th
+import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 
+DEVICE = th.device('cuda' if th.cuda.is_available() else 'cpu')
 
 def identity(x):
     return x
@@ -16,13 +18,55 @@ def kl_log_probs(log_p1, log_p2):
 
 
 def index_to_one_hot(index, dim):
-    if isinstance(index, np.int) or isinstance(index, np.int64):
+    if isinstance(index, np.int32) or isinstance(index, np.int64):
         one_hot = np.zeros(dim)
         one_hot[index] = 1.
     else:
         one_hot = np.zeros((len(index), dim))
         one_hot[np.arange(len(index)), index] = 1.
     return one_hot
+
+
+def index_to_one_hot_tensor(index: th.Tensor, dim):
+    one_hot = th.zeros(len(index), dim).to(index.device)
+    one_hot.scatter_(1, index.view(-1, 1), 1)
+    return one_hot
+
+
+def onehot_from_logits(logits: th.Tensor):
+    argmax_acs = (logits == logits.max(1, keepdim=True)[0]).float()
+    return argmax_acs
+
+
+def sample_gumbel(shape, eps=1e-20):
+    u = th.rand(shape, device=DEVICE)
+    return -th.log(-th.log(u + eps) + eps)
+
+
+def gumbel_softmax_sample(logits, temperature=1.):
+    y = logits + sample_gumbel(logits.size())
+    return F.softmax(y / temperature, dim=-1)
+
+
+def gumbel_softmax(logits, temperature=1., hard=True):
+    """
+    ST-gumple-softmax
+    input: [*, n_class]
+    return: flatten --> [*, n_class] an one-hot vector
+    """
+    y = gumbel_softmax_sample(logits, temperature)
+
+    if not hard:
+        return y
+
+    shape = y.size()
+    _, ind = y.max(dim=-1)
+    y_hard = th.zeros_like(y, device=DEVICE).view(-1, shape[-1])
+    y_hard.scatter_(1, ind.view(-1, 1), 1)
+    y_hard = y_hard.view(*shape)
+    # Set gradients w.r.t. y_hard gradients w.r.t. y
+    y_hard = (y_hard - y).detach() + y
+    return y_hard
 
 
 def to_tensor_var(x, use_cuda=True, dtype="float"):
@@ -70,3 +114,9 @@ def sum_mean_std(l):
     s_mu = np.mean(np.array(s), 0)
     s_std = np.std(np.array(s), 0)
     return s, s_mu, s_std
+
+
+# similarity between two cache
+def sim(x: np.ndarray, y: np.ndarray):
+    distance = np.linalg.norm(x-y, 2)
+    return 1 / (1 + distance)

@@ -1,15 +1,15 @@
 import torch as th
 from torch import nn
 from torch.optim import Adam
-
 import numpy as np
 
 from common.Agent import Agent
-from common.Model import MeanValueNet, ActorNet
-from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor
+from common.Model import MeanCriticNetDDPG, ActorNet
+from common.utils import to_tensor, index_to_one_hot, index_to_one_hot_tensor, gumbel_softmax, \
+    onehot_from_logits, identity
 
 
-class MFAC(Agent):
+class MFDDPG(Agent):
 
     def __init__(self, env, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
@@ -29,25 +29,27 @@ class MFAC(Agent):
 
         self.actor = [
             ActorNet(self.state_dim, self.actor_hidden_size,
-                     self.action_dim, self.actor_output_act).to(device)
+                     self.action_dim, identity).to(device)
             for _ in range(self.n_agents)]
         self.actor_target = [
             ActorNet(self.state_dim, self.actor_hidden_size,
-                     self.action_dim, self.actor_output_act).to(device)
+                     self.action_dim, identity).to(device)
             for _ in range(self.n_agents)]
+        for i in range(self.n_agents):
+            self.actor_target[i].load_state_dict(self.actor[i].state_dict())
         self.actor_optimizer = [Adam(self.actor[i].parameters(), lr=self.actor_lr)
                                 for i in range(self.n_agents)]
+
         self.critic = [
-            MeanValueNet(self.n_agents * self.state_dim, self.action_dim, self.critic_hidden_size, 1,
-                         self.critic_output_act).to(device)
-            for i in range(self.n_agents)]
+            MeanCriticNetDDPG(self.n_agents * self.state_dim, self.action_dim, self.critic_hidden_size, 1,
+                              self.critic_output_act).to(device)
+            for _ in range(self.n_agents)]
         self.critic_target = [
-            MeanValueNet(self.n_agents * self.state_dim, self.action_dim, self.critic_hidden_size, 1,
-                         self.critic_output_act).to(device)
-            for i in range(self.n_agents)]
+            MeanCriticNetDDPG(self.n_agents * self.state_dim, self.action_dim, self.critic_hidden_size,
+                              1, self.critic_output_act).to(device)
+            for _ in range(self.n_agents)]
         for i in range(self.n_agents):
             self.critic_target[i].load_state_dict(self.critic[i].state_dict())
-            self.actor_target[i].load_state_dict(self.actor[i].state_dict())
         self.critic_optimizer = [Adam(self.critic[i].parameters(), lr=self.critic_lr)
                                  for i in range(self.n_agents)]
 
@@ -67,7 +69,6 @@ class MFAC(Agent):
             # next_state = np.zeros_like(state)
             self.n_episodes += 1
             self.episode_done = True
-            self.env_state = self.env.reset()
         else:
             self.episode_done = False
         # self.n_steps += 1
@@ -80,52 +81,56 @@ class MFAC(Agent):
 
         batch = self.memory.sample(self.batch_size)
         states_tensor = to_tensor(batch.states, self.device).view(-1, self.n_agents * self.state_dim)
-        actions_tensor = to_tensor(batch.actions, self.device, 'int').view(-1, self.n_agents)
+        actions_index_tensor = to_tensor(batch.actions, self.device, 'int').view(-1, self.n_agents)
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
         next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents * self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
-        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.env.n_actions)
-        next_actions_tensor = []
+        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
 
-        # sample next actions from actor_target
-        for i in range(self.n_agents):
-            next_obs_tensor = next_states_tensor.view(-1, self.n_agents, self.action_dim)[:, i]
-            next_actions_prob_tensor = self.actor_target[i](next_obs_tensor)
-            next_actions_list = th.distributions.Categorical(next_actions_prob_tensor)
-            next_actions_index = next_actions_list.sample()
-            next_actions_tensor.append(next_actions_index)
+        current_qs = []
+        next_actions = []
+        current_actions = []
 
         for i in range(self.n_agents):
-            current_v = self.critic[i](states_tensor, mean_actions_tensor[:, i]).squeeze(1)
-            # calculate next mean action
+            # current q
+            action_tensor = index_to_one_hot_tensor(actions_index_tensor[:, i], self.action_dim)
+            current_q = self.critic[i](states_tensor, action_tensor, mean_actions_tensor[:, i]).squeeze(1)
+            current_qs.append(current_q)
+            # next action
+            obs_tensor = states_tensor.view(-1, self.n_agents, self.state_dim)[:, i]
+            next_actions_tensor = onehot_from_logits(self.actor_target[i](obs_tensor))
+            next_actions.append(next_actions_tensor)
+            # current action
+            current_actions_tensor = gumbel_softmax(self.actor[i](obs_tensor))
+            current_actions.append(current_actions_tensor)
+
+        for i in range(self.n_agents):
+            # target q and current value
             neighbors = self.env.get_obs(i)
-            next_mean_action_tensor = th.zeros_like(mean_actions_tensor[:, i], device=self.device)
+            n_neighbors = len(neighbors)
+            target_neighbor_actions_tensor = th.zeros_like(next_actions[i])
+            current_neighbor_actions_tensor = th.zeros_like(current_actions[i])
             for j in neighbors:
-                next_mean_action_tensor += index_to_one_hot_tensor(next_actions_tensor[j], self.action_dim)
-            next_mean_action_tensor /= len(neighbors)
-            next_v = self.critic_target[i](next_states_tensor, next_mean_action_tensor).squeeze(1).detach()
-            target_v = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
-            # calculate vf loss
+                target_neighbor_actions_tensor += next_actions[j]
+                current_neighbor_actions_tensor += current_actions[j]
+            target_mean_action = target_neighbor_actions_tensor / n_neighbors
+            current_mean_action = current_neighbor_actions_tensor / n_neighbors
+
+            next_v = self.critic_target[i](next_states_tensor, next_actions[i], target_mean_action).squeeze(1)
+            target_q = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
+            current_v = self.critic[i](states_tensor, current_actions[i], current_mean_action.detach())
+
+            # calculate critic loss
             self.critic_optimizer[i].zero_grad()
             if self.critic_loss == "huber":
-                vf_loss = nn.SmoothL1Loss()(current_v, target_v)
+                critic_loss = nn.SmoothL1Loss()(current_qs[i], target_q.detach())
             else:
-                vf_loss = nn.MSELoss()(current_v, target_v)
-            vf_loss.backward()
+                critic_loss = nn.MSELoss()(current_qs[i], target_q.detach())
+            critic_loss.backward()
 
-            # compute log action probs and target q
-            obs_tensor = states_tensor.view(-1, self.n_agents, self.state_dim)[:, i]
-            actions_index = actions_tensor[:, i]
-            actions_prob = self.actor[i](obs_tensor)
-            log_action_prob = th.log(actions_prob.gather(1, actions_index.unsqueeze(1)).squeeze(1) + 1e-6)
-            values = current_v.detach()
-            # calculate pg loss and entropy
+            # calculate actor loss
             self.actor_optimizer[i].zero_grad()
-            pg_loss = th.mean(-log_action_prob * (target_v - values))
-            neg_entropy = -th.mean(entropy(actions_prob))
-
-            # loss backward
-            actor_loss = pg_loss + self.entropy_reg * neg_entropy
+            actor_loss = -current_v.mean()
             actor_loss.backward()
 
             # optimizer step
@@ -135,6 +140,7 @@ class MFAC(Agent):
             self.critic_optimizer[i].step()
             self.actor_optimizer[i].step()
 
+        # soft update
         for i in range(self.n_agents):
             self._soft_update_target(self.critic_target[i], self.critic[i])
             self._soft_update_target(self.actor_target[i], self.actor[i])
@@ -143,18 +149,18 @@ class MFAC(Agent):
     def mean_action(self, state, evaluation=False):
 
         actions = np.zeros(self.n_agents, dtype='int')
-        state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
-        mean_actions = np.zeros((self.n_agents, self.env.n_actions))
+        state_tensor = to_tensor(state, self.device).unsqueeze(0)
+        mean_actions = np.zeros((self.n_agents, self.action_dim))
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
+                  np.exp(-1. * self.n_episodes / self.epsilon_decay)
 
         for i in range(self.n_agents):
-            if (self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon) and not evaluation:
-                actions[i] = np.random.choice(self.env.n_actions)
+            if np.random.rand() < epsilon and not evaluation:
+                actions[i] = np.random.choice(self.action_dim)
             else:
-                obs_tensor = state_tensor[:, i]
+                obs_tensor = state_tensor.view(-1, self.n_agents, self.state_dim)[:, i]
                 actions_prob_tensor = self.actor[i](obs_tensor).squeeze(0)
-                actions_list = th.distributions.Categorical(actions_prob_tensor)
+                actions_list = th.distributions.Categorical(logits=actions_prob_tensor)
                 action = actions_list.sample()
                 actions[i] = action.item()
 

@@ -9,7 +9,7 @@ from common.Model import MeanQNet
 from common.utils import to_tensor, index_to_one_hot
 
 
-class MFDQN(Agent):
+class MFIQ(Agent):
 
     def __init__(self, env, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
@@ -29,17 +29,12 @@ class MFDQN(Agent):
 
         self.temperature = self.env.temperature
 
-        self.qnet = [
-            MeanQNet(self.state_dim, self.action_dim, self.critic_hidden_size, self.action_dim,
-                     self.critic_output_act).to(device)
-            for i in range(self.n_agents)]
-        self.qnet_target = [
-            MeanQNet(self.state_dim, self.action_dim, self.critic_hidden_size,
-                     self.action_dim, self.critic_output_act).to(device)
-            for i in range(self.n_agents)]
-        for i in range(self.n_agents):
-            self.qnet_target[i].load_state_dict(self.qnet[i].state_dict())
-        self.qnet_optimizer = [Adam(self.qnet[i].parameters(), lr=self.actor_lr) for i in range(self.n_agents)]
+        self.qnet = MeanQNet(self.state_dim, self.action_dim, self.critic_hidden_size, self.action_dim,
+                             self.critic_output_act).to(device)
+        self.qnet_target = MeanQNet(self.state_dim, self.action_dim, self.critic_hidden_size,
+                                    self.action_dim, self.critic_output_act).to(device)
+        self.qnet_target.load_state_dict(self.qnet.state_dict())
+        self.qnet_optimizer = Adam(self.qnet.parameters(), lr=self.critic_lr)
 
         self.mean_actions = np.zeros((self.n_agents, self.env.n_actions))
         self.mean_actions_e = np.zeros((self.n_agents, self.env.n_actions))
@@ -61,7 +56,6 @@ class MFDQN(Agent):
             # next_state = np.zeros_like(state)
             self.n_episodes += 1
             self.episode_done = True
-            self.env_state = self.env.reset()
         else:
             self.episode_done = False
         # self.n_steps += 1
@@ -85,11 +79,11 @@ class MFDQN(Agent):
         for i in range(self.n_agents):
 
             actions_index = actions_tensor[:, i].unsqueeze(1)
-            current_q = self.qnet[i](states_tensor[:, i], mean_actions_tensor[:, i]).gather(1, actions_index).squeeze(1)
+            current_q = self.qnet(states_tensor[:, i], mean_actions_tensor[:, i]).gather(1, actions_index).squeeze(1)
 
             # compute mean field V(s')
-            next_state_action_values_tensor = self.qnet_target[i](next_states_tensor[:, i],
-                                                                  mean_actions_tensor[:, i]).detach()
+            next_state_action_values_tensor = self.qnet_target(next_states_tensor[:, i],
+                                                               mean_actions_tensor[:, i]).detach()
             # next_actions_index = th.argmax(next_state_action_values_tensor, dim=1).unsqueeze(1)
             # next_v = self.qnet_target(next_states_tensor[:, i],
             #                           mean_actions_tensor[:, i]).gather(1, next_actions_index).squeeze(1).detach()
@@ -100,7 +94,7 @@ class MFDQN(Agent):
             target_q = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
 
             # update value network
-            self.qnet_optimizer[i].zero_grad()
+            self.qnet_optimizer.zero_grad()
             if self.critic_loss == "huber":
                 loss = nn.SmoothL1Loss()(current_q, target_q)
             else:
@@ -108,10 +102,9 @@ class MFDQN(Agent):
             loss.backward()
             if self.max_grad_norm is not None:
                 nn.utils.clip_grad_norm_(self.qnet[i].parameters(), self.max_grad_norm)
-            self.qnet_optimizer[i].step()
+            self.qnet_optimizer.step()
 
-        for i in range(self.n_agents):
-            self._soft_update_target(self.qnet_target[i], self.qnet[i])
+        self._soft_update_target(self.qnet_target, self.qnet)
 
     # get actions and mean actions by alternatively updating policy and mean action
     def mean_action(self, state, evaluation=False):
@@ -120,15 +113,15 @@ class MFDQN(Agent):
         actions = np.zeros(self.n_agents, dtype='int')
         mean_actions = self.mean_actions_e if evaluation else self.mean_actions
         mean_actions_tensor = to_tensor(mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
-        epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
+        epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * np.exp(-1. * self.n_episodes /
+                                                                                      self.epsilon_decay)
 
         # update policies
         for i in range(self.n_agents):
-            if (self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon) and not evaluation:
+            if th.rand(1) < epsilon and not evaluation:
                 actions[i] = np.random.choice(self.env.n_actions)
             else:
-                state_action_values_tensor = self.qnet[i](state_tensor[:, i], mean_actions_tensor[:, i]).squeeze(0)
+                state_action_values_tensor = self.qnet(state_tensor[:, i], mean_actions_tensor[:, i]).squeeze(0)
                 actions[i] = th.argmax(state_action_values_tensor, dim=0).item()
 
         # update mean actions

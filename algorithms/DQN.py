@@ -1,15 +1,11 @@
-import copy
-
 import torch as th
 from torch import nn
-from torch.optim import Adam, RMSprop
-
+from torch.optim import Adam
 import numpy as np
 
 from common.Agent import Agent
 from common.Model import ActorNet
-from common.utils import identity, to_tensor
-from common.environment.utils.tool import int2binary, binary2int
+from common.utils import to_tensor
 
 
 class DQN(Agent):
@@ -34,19 +30,16 @@ class DQN(Agent):
                          episodes_before_train, epsilon_start, epsilon_end, epsilon_decay, target_tau,
                          target_update_step)
 
-        self.actor = [ActorNet(self.state_dim, self.actor_hidden_size,
-                               self.action_dim, self.critic_output_act).to(device)
-                      for _ in range(self.n_agents)]
-        self.actor_target = [ActorNet(self.state_dim, self.actor_hidden_size,
-                                      self.action_dim, self.critic_output_act).to(device)
-                             for _ in range(self.n_agents)]
+        self.qnet = [ActorNet(self.state_dim, self.actor_hidden_size,
+                              self.action_dim, self.critic_output_act).to(device)
+                     for i in range(self.n_agents)]
+        self.qnet_target = [ActorNet(self.state_dim, self.actor_hidden_size,
+                                     self.action_dim, self.critic_output_act).to(device)
+                            for i in range(self.n_agents)]
         for i in range(self.n_agents):
-            self.actor_target[i].load_state_dict(self.actor[i].state_dict())
-        self.actor_optimizer = [Adam(self.actor[i].parameters(), lr=self.actor_lr)
-                                for i in range(self.n_agents)]
-        if self.optimizer_type == "rmsprop":
-            self.actor_optimizer = [RMSprop(self.actor[i].parameters(), lr=self.actor_lr)
-                                    for i in range(self.n_agents)]
+            self.qnet_target[i].load_state_dict(self.qnet[i].state_dict())
+        self.qnet_optimizer = [Adam(self.qnet[i].parameters(), lr=self.actor_lr)
+                               for i in range(self.n_agents)]
 
     # agent interact with the environment to collect experience
     def interact(self):
@@ -58,45 +51,44 @@ class DQN(Agent):
             pass
 
         batch = self.memory.sample(self.batch_size)
-        states_tensor = to_tensor(batch.states, self.device).view(-1, self.state_dim)
+        states_tensor = to_tensor(batch.states, self.device).view(-1, self.n_agents, self.state_dim)
         actions_tensor = to_tensor(batch.actions, self.device, 'int').view(-1, self.n_agents)
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
-        next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.state_dim)
+        next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
 
         # compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken
         for i in range(self.n_agents):
 
-            current_q = self.actor[i](states_tensor).gather(1, actions_tensor[:, i].unsqueeze(1)).squeeze(1)
+            current_q = self.qnet[i](states_tensor[:, i]).gather(1, actions_tensor[:, i].unsqueeze(1)).squeeze(1)
 
             # compute V(s_{t+1}) for all next states and all actions,
             # and we then take max_a { V(s_{t+1}) }
-            next_state_action_values = self.actor_target[i](next_states_tensor).detach()
+            next_state_action_values = self.qnet_target[i](next_states_tensor[:, i]).detach()
             next_q = th.max(next_state_action_values, 1)[0].view(-1)
             # compute target q by: r + gamma * max_a { V(s_{t+1}) }
             target_q = self.reward_scale * rewards_tensor[:, i] + self.reward_gamma * next_q * (1. - dones_tensor[:, i])
 
             # update value network
-            self.actor_optimizer[i].zero_grad()
+            self.qnet_optimizer[i].zero_grad()
             if self.critic_loss == "huber":
                 loss = nn.SmoothL1Loss()(current_q, target_q)
             else:
                 loss = nn.MSELoss()(current_q, target_q)
             loss.backward()
             if self.max_grad_norm is not None:
-                nn.utils.clip_grad_norm_(self.actor[i].parameters(), self.max_grad_norm)
-            self.actor_optimizer[i].step()
+                nn.utils.clip_grad_norm_(self.qnet[i].parameters(), self.max_grad_norm)
+            self.qnet_optimizer[i].step()
 
         for i in range(self.n_agents):
-            self._soft_update_target(self.actor_target[i], self.actor[i])
+            self._soft_update_target(self.qnet_target[i], self.qnet[i])
 
     # choose an action based on state for execution
     def action(self, state):
         action = np.zeros(self.n_agents, dtype='int')
-        state_tensor = to_tensor(state, self.device).unsqueeze(0)
+        state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
         for i in range(self.n_agents):
-            state_action_value_tensor = self.actor[i](state_tensor).squeeze(0)
-            state_action_value = state_action_value_tensor.cpu().data.numpy()
-            action[i] = np.argmax(state_action_value)
+            state_action_values_tensor = self.qnet[i](state_tensor[:, i]).squeeze(0)
+            action[i] = th.argmax(state_action_values_tensor, dim=0).item()
         return action

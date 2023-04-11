@@ -33,6 +33,7 @@ class Agent(object):
                  epsilon_start=0.9, epsilon_end=0.01, epsilon_decay=200,
                  target_tau=0.01, target_update_step=10):
 
+        self.vf_coef = 1
         self.env = env
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -42,6 +43,7 @@ class Agent(object):
         self.n_steps = 0
         self.max_steps = max_steps
         self.roll_out_n_steps = 1
+        self.episode_done = False
 
         self.reward_gamma = reward_gamma
         self.reward_scale = reward_scale
@@ -79,24 +81,25 @@ class Agent(object):
 
     # take one step
     def _take_one_step(self):
-        if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
-            self.env_state = self.env.reset()
-            self.n_steps = 0
+        # if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
+        #     self.env_state = self.env.reset()
+        #     self.n_steps = 0
         state = self.env_state
         action = self.exploration_action(state)
         next_state, reward, done, _ = self.env.step(action)
+        self.env_state = next_state
 
         if done[0]:
             if self.done_penalty is not None:
                 reward = np.ones(self.n_agents) * self.done_penalty
-            next_state = np.zeros_like(state)
-            self.env_state = self.env.reset()
+            # next_state = np.zeros_like(state)
+            # self.env_state = self.env.reset()
             self.n_episodes += 1
             self.episode_done = True
+            self.env_state = self.env.reset()
         else:
-            self.env_state = next_state
             self.episode_done = False
-        self.n_steps += 1
+        # self.n_steps += 1
         self.memory.push(state, action, reward, next_state, done)
 
     # take n_agents steps
@@ -157,8 +160,8 @@ class Agent(object):
     # choose an action based on state with random noise added for exploration in training
     def exploration_action(self, state) -> np.ndarray:
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  np.exp(-1. * self.n_episodes / self.epsilon_decay)
-        if np.random.rand() < epsilon:
+                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
+        if self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon:
             action = np.random.choice(self.env.n_actions, self.env.n_agents)
         else:
             action = self.action(state)
@@ -179,16 +182,11 @@ class Agent(object):
         rewards_cache = []
         rewards_switch = []
         users_info = []
-        stats = {}
-        stats['cache'] = []
-        stats['delay'] = []
-        stats['ratio'] = []
-        average_delays = []
+        stats = {'cache': [], 'delay': [], 'ratio': []}
         # seed_everything(seed)
 
         for i in range(eval_episodes):
-            self.mean_actions_e = copy.deepcopy(self.mean_actions)
-            stats['delay'] = []
+            self.mean_actions_e = np.zeros((self.n_agents, self.action_dim))
             rewards_i = []
             rewards_cache_i = []
             rewards_switch_i = []
@@ -202,6 +200,7 @@ class Agent(object):
             rewards_switch_i.append(info[1])
             stats['delay'].append(env.world.average_delay)
             stats['ratio'].append(env.world.cache_hit_ratio)
+            stats['cache'].append(env.world.cache_stat)
 
             while not done:
                 action = self.action(state)
@@ -213,12 +212,13 @@ class Agent(object):
                 rewards_switch_i.append(info[1])
                 stats['delay'].append(env.world.average_delay)
                 stats['ratio'].append(env.world.cache_hit_ratio)
+                stats['cache'].append(env.world.cache_stat)
 
             rewards.append(rewards_i)
             rewards_cache.append(rewards_cache_i)
             rewards_switch.append(rewards_switch_i)
             infos.append(env.state_info())
             users_info.append(env.users_info())
-            stats['cache'].append(env.world.cache_stat)
+
 
         return rewards, infos, rewards_cache, rewards_switch, users_info, stats

@@ -4,9 +4,12 @@ import numpy as np
 
 
 # convert  EdgeAgentStates array/tuple to 1d array of numbers
-def states2array(states):
+def states2array(states, add_ppl=True):
     states = np.array(states).flatten()
-    return np.ravel([[state.popularity, state.cache] for state in states])
+    if add_ppl:
+        return np.ravel([[state.popularity, state.cache] for state in states])
+    else:
+        return np.ravel([state.cache for state in states])
 
 
 def actions2array(actions):
@@ -45,6 +48,7 @@ def seed_everything(seed):
 def normalize(x):
     x = np.array(x)
     y = (x-np.min(x)) / (np.max(x)-np.min(x))
-    e_y = np.exp(y)
+    e_y = np.exp(y/2)
+    # e_y = y
     res = e_y / np.sum(e_y) * len(e_y)
     return res

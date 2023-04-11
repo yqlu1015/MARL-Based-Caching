@@ -57,7 +57,7 @@ class User(object):
     def __init__(self, user_id, loc=np.array([0, 0]), models_num=10):
         self.id = user_id
         self.loc = loc
-        self.target = np.zeros(models_num, dtype=np.int)
+        self.target = np.zeros(models_num, dtype='int')
         self.accuracy = np.zeros(models_num, dtype=np.float32)  # %
         self.trans_delay = np.zeros(models_num, dtype=np.float32)  # s
         self.inf_delay = np.zeros(models_num, dtype=np.float32)  # s
@@ -201,7 +201,7 @@ class EdgeWorld(object):
 
     # update the statistics of model caches and average delay
     def _update_stat(self):
-        self.cache_stat = np.zeros(self.n_models, dtype=np.int)
+        self.cache_stat = np.zeros(self.n_models, dtype='int')
         for edge in self.agents:
             pre_cnt = 0
             for i, cache in enumerate(edge.action.a):
@@ -212,6 +212,7 @@ class EdgeWorld(object):
         self.average_delay = 0.
         for i, user in enumerate(self.users):
             for type_idx in range(self.n_model_types):
-                self.average_delay += (user.inf_delay[type_idx] + user.trans_delay[type_idx])
+                self.average_delay += (user.inf_delay[type_idx] + user.trans_delay[type_idx]) * \
+                                      self.requests_next[i][type_idx]
 
-        self.average_delay /= (self.n_users * self.n_model_types)
+        self.average_delay /= sum(sum(self.requests_next))

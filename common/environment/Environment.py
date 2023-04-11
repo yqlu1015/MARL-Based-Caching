@@ -21,7 +21,7 @@ class EdgeMultiAgentEnv(gym.Env):
     }
 
     def __init__(self, n_agents=100, n_users=30, agent_capacity=100, agent_view=1, n_requests=1000, max_steps=10000,
-                 temperature=0.1, eta=1, beta=1, seed=2023, zipf_param=0.8):
+                 temperature=0.1, eta=1, beta=1, seed=2023, zipf_param=0.8, add_ppl=True):
         np.random.seed(seed)
         self.world = make_world(n_agents=n_agents, agent_view=agent_view, agent_capacity=agent_capacity,
                                 n_users=n_users, n_requests=n_requests, max_steps=max_steps, zipf_param=zipf_param)
@@ -39,6 +39,7 @@ class EdgeMultiAgentEnv(gym.Env):
         self.temperature = temperature
         self.eta = eta  # weight factor for switch cost
         self.beta = beta  # weight factor for accuracy
+        self.add_ppl = add_ppl  # whether adding model popularity to the state or not
 
         # configure spaces
         # no implementation here
@@ -92,7 +93,7 @@ class EdgeMultiAgentEnv(gym.Env):
 
     # get global state of the world
     def _get_state(self) -> np.ndarray:
-        return states2array(self.world.global_state)
+        return states2array(self.world.global_state, self.add_ppl)
 
     # get observation for a particular agent
     def get_obs(self, agent_id) -> list:
@@ -100,13 +101,14 @@ class EdgeMultiAgentEnv(gym.Env):
         agent = self.agents[agent_id]
         ids = []
         for i, neighbor in enumerate(agent.neighbor_mask):
-            if neighbor == 1:
+            if neighbor == 1 and i != agent_id:
                 ids.append(i)
         return ids
 
     # get dones for a particular agent
     def _get_done(self, agent) -> bool:
         if self.world.n_steps >= self.world.max_steps:
+            self.world.n_steps = 0
             return True
         return False
 
@@ -145,20 +147,40 @@ class EdgeMultiAgentEnv(gym.Env):
 
         return res
 
+    # multi-agent environment
+    def action_values_softmax(self, action_values: th.Tensor) -> th.Tensor:
+        action_values = th.softmax(action_values / self.temperature, dim=1)
+        action_values = th.clip(action_values, min=1e-10, max=1 - 1e-10)
+
+        return action_values
+
 
 # helper functions
-def make_world(shape_size=np.array([1000, 1000]), n_agents=100, agent_view=1, agent_capacity=20, n_users=10,
-               n_requests=1000, max_steps=10000, zipf_param=0.8) -> EdgeWorld:
+def make_world(shape_size=np.array([1000, 1000], dtype='float'), n_agents=5, agent_view=1, agent_capacity=20,
+               n_users=15,
+               n_requests=1000, max_steps=10000, zipf_param=0.8, user_density=3) -> EdgeWorld:
     world = EdgeWorld(n_agents=n_agents, n_users=n_users)
     world.shape_size = shape_size
 
-    world.agent_view_sight = min(agent_view, n_agents-1)
+    world.agent_view_sight = min(agent_view, n_agents - 1)
     world.agent_storage = agent_capacity
     world.agents = [EdgeAgent(capacity=world.agent_storage, view_sight=world.agent_view_sight, id=i)
                     for i in range(n_agents)]
+    agent_locs = [[0, 0], [1, 0], [1, 1], [0, 1], [.5, .5]]
+    # generate locations within circles centering at agent_locs
+    rads = [[0, .5], [.5, 1], [1, 1.5], [1.5, 2], [0, 2]]
+    user_locs = []
+    for i in range(n_users):
+        agent_idx = i // user_density
+        limit = rads[agent_idx]
+        theta = (np.random.rand() * (limit[1] - limit[0]) + limit[0]) * np.pi
+        loc = [0.1 * np.cos(theta), 0.1 * np.sin(theta)] + agent_locs[agent_idx]
+        user_locs.append(loc)
+
     for i, agent in enumerate(world.agents):
         agent.state = world.global_state[i]
         agent.location = np.random.random(2) * world.shape_size
+        # agent.location = world.shape_size * agent_locs[i]
     for agent in world.agents:
         calc_mask(agent, world)
 
@@ -174,6 +196,8 @@ def make_world(shape_size=np.array([1000, 1000]), n_agents=100, agent_view=1, ag
 
     world.users = [User(user_id=i, loc=np.random.random(2) * world.shape_size, models_num=world.n_model_types)
                    for i in range(n_users)]
+    # world.users = [User(user_id=i, loc=world.shape_size * user_locs[i], models_num=world.n_model_types)
+    #                for i in range(n_users)]
     calc_trans_rate(world)
 
     world.n_requests = n_requests
@@ -198,8 +222,8 @@ def reset_world(world: EdgeWorld):
         s.cache = world.number2cache[np.random.choice(world.n_caches)]
         s.popularity = np.zeros(world.n_model_types)
     world.requests_next = generate_requests(num_users=world.n_users, num_types=world.n_model_types,
-                                            num_low=int(world.n_requests*0.8), num_high=int(world.n_requests*1.2),
-                                            orders=world.request_popularity,zipf_param=world.zipf_param)
+                                            num_low=int(world.n_requests * 0.8), num_high=int(world.n_requests * 1.2),
+                                            orders=world.request_popularity, zipf_param=world.zipf_param)
 
 
 # set env action for a particular agent
@@ -227,6 +251,7 @@ def calc_mask(agent: EdgeAgent, world: EdgeWorld):
         sorted_dict = dict(sorted(dis_id.items()))
         ids = list(sorted_dict.values())[:agent.view_sight + 1]
         agent.neighbor_mask[ids] = 1
+
 
 
 # calculate all valid caches that will not exceed storage space of the edge and set the mapping between number and cache
@@ -282,14 +307,6 @@ def calc_trans_rate(world: EdgeWorld):
 
     for i in range(world.n_agents):
         world.trans_rates_ec[i] = 10  # Mbps from UAV
-
-
-# multi-agent environment
-def action_values_softmax(action_values: th.Tensor) -> th.Tensor:
-    action_values = th.softmax(action_values, dim=1)
-    action_values = th.clip(action_values, min=1e-10, max=1 - 1e-10)
-
-    return action_values
 
 
 # model list
