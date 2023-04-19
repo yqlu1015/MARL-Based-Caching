@@ -9,7 +9,7 @@ from common.Model import MeanQNet
 from common.utils import to_tensor, index_to_one_hot
 
 
-class MFIQ(Agent):
+class MFQS(Agent):
 
     def __init__(self, env, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
@@ -20,12 +20,12 @@ class MFIQ(Agent):
                  optimizer_type="adam", entropy_reg=0.01,
                  max_grad_norm=0.5, batch_size=1000, episodes_before_train=100,
                  epsilon_start=0.9, epsilon_end=0.01, epsilon_decay=200,
-                 target_tau=0.01, target_update_step=10, seed=0):
+                 target_tau=0.01, target_update_step=10, max_episodes=1000):
         super().__init__(env, state_dim, action_dim, device, memory_capacity, max_steps, reward_gamma, reward_scale,
                          done_penalty, actor_hidden_size, critic_hidden_size, actor_output_act, critic_output_act,
                          critic_loss, actor_lr, critic_lr, optimizer_type, entropy_reg, max_grad_norm, batch_size,
                          episodes_before_train, epsilon_start, epsilon_end, epsilon_decay, target_tau,
-                         target_update_step)
+                         target_update_step, max_episodes)
 
         self.temperature = self.env.temperature
 
@@ -56,6 +56,7 @@ class MFIQ(Agent):
             # next_state = np.zeros_like(state)
             self.n_episodes += 1
             self.episode_done = True
+            self.env_state = self.env.reset()
         else:
             self.episode_done = False
         # self.n_steps += 1
@@ -113,12 +114,12 @@ class MFIQ(Agent):
         actions = np.zeros(self.n_agents, dtype='int')
         mean_actions = self.mean_actions_e if evaluation else self.mean_actions
         mean_actions_tensor = to_tensor(mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
-        epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * np.exp(-1. * self.n_episodes /
-                                                                                      self.epsilon_decay)
+        epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+                  ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train)) ** 3
 
         # update policies
         for i in range(self.n_agents):
-            if th.rand(1) < epsilon and not evaluation:
+            if (self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon) and not evaluation:
                 actions[i] = np.random.choice(self.env.n_actions)
             else:
                 state_action_values_tensor = self.qnet(state_tensor[:, i], mean_actions_tensor[:, i]).squeeze(0)

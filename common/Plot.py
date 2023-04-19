@@ -32,16 +32,21 @@ def plot_from_data(file_names: list, algo_ids: list, suffix='comp'):
 
 # plot rewards with different settings of hyperparameters
 # one csv file contains multiple columns of rewards
-def plot_rewards_from_df(file_name: str, labels: list):
+def plot_rewards_from_files(file_names: list, algo_id: str, learning_rates: list, batch_sizes: list):
     rewards_sum = []
+    episodes = []
+    n = len(file_names)
 
-    df = pd.read_csv(file_name)
-    episodes = df.iloc[:, 0].to_numpy()
-    for j in range(1, len(df.columns)):
-        rewards_sum.append(df.iloc[:, j].to_numpy())
+    for i, file_name in enumerate(file_names):
+        rewards_sum.append([])
+        df = pd.read_csv(file_name)
+        episodes = df.iloc[:, 0].to_numpy()
+        for j in range(1, len(df.columns)):
+            rewards_sum[i].append(df.iloc[:, j].to_numpy())
 
     time_str = time.strftime('%m_%d_%H_%M')
-    plot_rewards_sum(episodes=episodes, rewards_sum=rewards_sum, time_str=time_str, algo_ids=labels, suffix='param')
+    plot_rewards_sum(episodes=episodes, rewards_sum=rewards_sum, time_str=time_str, algo_id=algo_id,
+                     learning_rates=learning_rates, batch_sizes=batch_sizes, suffix='param', n_plots=n)
 
 
 # draw the locations of users and edges in the system
@@ -97,41 +102,39 @@ def plot_sim_dis(env: EdgeMultiAgentEnv, time_str: str, algo_id: str):
 
 
 def plot_rewards_sum(episodes: np.ndarray, rewards_sum: list, time_str: str, algo_id: str = None, algo_ids: list = None,
-                     learning_rates=None, batch_sizes=None, suffix='comp'):
+                     learning_rates=None, batch_sizes=None, suffix='comp', n_plots=1):
     # plt.style.use('seaborn-v0_8-white')
-
     if learning_rates is not None and batch_sizes is not None:
-        n = len(learning_rates)
-        m = len(batch_sizes)
-        if algo_id == 'mfac':
-            fig, axes = plt.subplots(3, 1)
-        else:
-            fig, axes = plt.subplots(2, 1)
+        fig, axes = plt.subplots(n_plots, 1, figsize=(8*n_plots, 3))
+        colors = ["#ff595e", "#ffca3a", "#1982c4", "#8ac926", "#6a4c93"]
 
-        colors = plt.cm.rainbow(np.linspace(0, 1, m))
+        ax = axes if n_plots == 1 else axes[0]
         for j, bs in enumerate(batch_sizes):
             label = f"batch size={bs}"
-            axes[0].plot(episodes, rewards_sum[0][j], color=colors[j], linewidth=1, label=label)
+            ax.plot(episodes, rewards_sum[0][j], color=colors[j], linewidth=1, label=label)
         # axes[0].set_title(f"learning rate={learning_rates[i]: 0e}")
-        axes[0].legend(loc='lower left', bbox_to_anchor=(1.04, 0), borderaxespad=0, frameon=True)
-        axes[0].set_ylabel(r"$\sum_m R_m^t$")
-        axes[0].set_xlabel('Episode')
-        axes[0].grid(linestyle='--', linewidth=0.5)
+        # axes[0].legend(loc='lower left', bbox_to_anchor=(1.04, 0), borderaxespad=0, frameon=True)
+        ax.legend(frameon=True)
+        ax.set_ylabel(r"$\sum_m R_m^t$")
+        ax.set_xlabel('Episode')
+        ax.grid(linestyle='--', linewidth=0.5)
 
-        colors = plt.cm.rainbow(np.linspace(0, 1, n))
-        for j, lr in enumerate(learning_rates):
-            label = f"actor learning rate={lr:.2e}"
-            axes[1].plot(episodes, rewards_sum[1][j], color=colors[j], linewidth=1, label=label)
-        axes[1].legend(loc='lower left', bbox_to_anchor=(1.04, 0), borderaxespad=0, frameon=True)
-        axes[1].set_ylabel(r"$\sum_m R_m^t$")
-        axes[1].set_xlabel('Episode')
-        axes[1].grid(linestyle='--', linewidth=0.5)
-
-        if algo_id == 'mfac':
+        if n_plots >= 2:
             for j, lr in enumerate(learning_rates):
-                label = f"critic learning rate={lr: .2e}"
+                label = f"critic learning rate={lr:.2e}" if algo_id == 'mfac' else f"learning rate={lr:.2e}"
+                axes[1].plot(episodes, rewards_sum[1][j], color=colors[j], linewidth=1, label=label)
+            # axes[1].legend(loc='lower left', bbox_to_anchor=(1.04, 0), borderaxespad=0, frameon=True)
+            axes[1].legend(frameon=True)
+            axes[1].set_ylabel(r"$\sum_m R_m^t$")
+            axes[1].set_xlabel('Episode')
+            axes[1].grid(linestyle='--', linewidth=0.5)
+
+        if n_plots >= 3:
+            for j, lr in enumerate(learning_rates):
+                label = f"actor learning rate={lr: .2e}"
                 axes[2].plot(episodes, rewards_sum[2][j], color=colors[j], linewidth=1, label=label)
-            axes[2].legend(loc='lower left', bbox_to_anchor=(1.04, 0), borderaxespad=0, frameon=True)
+            # axes[2].legend(loc='lower left', bbox_to_anchor=(1.04, 0), borderaxespad=0, frameon=True)
+            axes[2].legend(frameon=True)
             axes[2].set_ylabel(r"$\sum_m R_m^t$")
             axes[2].set_xlabel('Episode')
             axes[2].grid(linestyle='--', linewidth=0.5)
@@ -141,15 +144,17 @@ def plot_rewards_sum(episodes: np.ndarray, rewards_sum: list, time_str: str, alg
 
     if algo_ids is not None:
         n = len(algo_ids)
-        fig, ax = plt.subplots()
-        colors = plt.cm.rainbow(np.linspace(0, 1, n))
+        fig, ax = plt.subplots(figsize=(8, 4))
+        colors = plt.cm.jet(np.linspace(0.2, 0.8, n))
+        palette = ["#ff595e", "#ffca3a", "#8ac926", "#1982c4", "#6a4c93"]
+
         for j, reward in enumerate(rewards_sum):
             label = f"{algo_ids[j]}"
-            ax.plot(episodes, reward, color=colors[j], linewidth=1, label=label)
+            ax.plot(episodes, reward, color=palette[j], linewidth=1, label=label)
         ax.legend(frameon=True)
         ax.set_ylabel(r"$\sum_m R_m^t$")
         ax.set_xlabel('Episode')
-        ax.grid(linestyle='--', linewidth=0.5)
+        # ax.grid(linestyle='--', linewidth=0.5)
 
         plt.tight_layout()
         plt.savefig(f"./output/{time_str}_rewards_{suffix}.png", bbox_inches='tight', dpi=600)
@@ -159,26 +164,30 @@ def plot_delay(delays: list, cache_hit_ratio: list, episodes: np.ndarray, time_s
                algo_ids: List[str]):
     plt.style.use('seaborn-v0_8-white')
     n = len(cache_hit_ratio)
-    fig, axes = plt.subplots(2, 1)
+    fig, axes = plt.subplots(2, 1, figsize=(7, 5))
 
-    colors = plt.cm.rainbow(np.linspace(0, 1, n))
+    colors = plt.cm.hsv(np.linspace(0, 0.8, n))
+    palette = ['#AF87CE', '#EA1A7F', '#FEC603', '#A8F387', '#16D6FA']
+    palette2 = ['#00ECC2', '#0078FF', '#FFD75F', '#FF8A25', '#FF4359']
+    palette3 = ["#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"]
+
     ax = axes[0]
     for i in range(n):
-        ax.plot(episodes, delays[i], color=colors[i], linewidth=1, label=algo_ids[i])
+        ax.plot(episodes, delays[i], color=palette2[i % len(palette2)], linewidth=1, label=algo_ids[i])
     ax.legend(frameon=True)
     ax.set_ylabel('Average Delay (ms)')
     ax.set_xlabel('Episode')
-    ax.grid(linestyle='--', linewidth=0.5)
+    # ax.grid(linestyle='--', linewidth=0.5)
     ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
 
-    colors = plt.cm.rainbow(np.linspace(0, 1, n))
     ax = axes[1]
     for i in range(n):
-        ax.plot(episodes, cache_hit_ratio[i] * 100, color=colors[i], linewidth=1, label=algo_ids[i])
+        ax.plot(episodes, cache_hit_ratio[i] * 100, color=palette2[i % len(palette2)], linewidth=1,
+                label=algo_ids[i])
     ax.legend(frameon=True)
     ax.set_ylabel('Average Cache Hit Ratio (%)')
     ax.set_xlabel('Episode')
-    ax.grid(linestyle='--', linewidth=0.5)
+    # ax.grid(linestyle='--', linewidth=0.5)
     ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
 
     plt.tight_layout()

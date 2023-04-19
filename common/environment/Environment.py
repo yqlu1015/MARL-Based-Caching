@@ -166,16 +166,16 @@ def make_world(shape_size=np.array([1000, 1000], dtype='float'), n_agents=5, age
     world.agent_storage = agent_capacity
     world.agents = [EdgeAgent(capacity=world.agent_storage, view_sight=world.agent_view_sight, id=i)
                     for i in range(n_agents)]
-    agent_locs = [[0, 0], [1, 0], [1, 1], [0, 1], [.5, .5]]
-    # generate locations within circles centering at agent_locs
-    rads = [[0, .5], [.5, 1], [1, 1.5], [1.5, 2], [0, 2]]
-    user_locs = []
-    for i in range(n_users):
-        agent_idx = i // user_density
-        limit = rads[agent_idx]
-        theta = (np.random.rand() * (limit[1] - limit[0]) + limit[0]) * np.pi
-        loc = [0.1 * np.cos(theta), 0.1 * np.sin(theta)] + agent_locs[agent_idx]
-        user_locs.append(loc)
+    # agent_locs = [[0, 0], [1, 0], [1, 1], [0, 1], [.5, .5]]
+    # # generate locations within circles centering at agent_locs
+    # rads = [[0, .5], [.5, 1], [1, 1.5], [1.5, 2], [0, 2]]
+    # user_locs = []
+    # for i in range(n_users):
+    #     agent_idx = i // user_density
+    #     limit = rads[agent_idx]
+    #     theta = (np.random.rand() * (limit[1] - limit[0]) + limit[0]) * np.pi
+    #     loc = [0.1 * np.cos(theta), 0.1 * np.sin(theta)] + agent_locs[agent_idx]
+    #     user_locs.append(loc)
 
     for i, agent in enumerate(world.agents):
         agent.state = world.global_state[i]
@@ -237,19 +237,19 @@ def calc_mask(agent: EdgeAgent, world: EdgeWorld):
     # init mask with all zeros
     agent.neighbor_mask = np.zeros(world.n_agents, dtype=np.int8)
 
-    if agent.view_sight == -1:
-        # fully observed
-        agent.neighbor_mask += 1
-    elif agent.view_sight == 0:
-        # observe itself
-        agent.neighbor_mask[agent.id] = 1
+    if agent.view_sight >= world.n_agents - 1 or agent.view_sight < 0:
+        # observe
+        agent.neighbor_mask = np.ones(world.n_agents, dtype=np.int8)
+        agent.neighbor_mask[agent.id] = 0
     elif agent.view_sight > 0:
         dis_id = {}
         for a in world.agents:
+            if a == agent:
+                continue
             dis = np.linalg.norm(a.location - agent.location)
             dis_id[dis] = a.id
         sorted_dict = dict(sorted(dis_id.items()))
-        ids = list(sorted_dict.values())[:agent.view_sight + 1]
+        ids = list(sorted_dict.values())[:agent.view_sight]
         agent.neighbor_mask[ids] = 1
 
 

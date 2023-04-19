@@ -20,12 +20,12 @@ class AC(Agent):
                  optimizer_type="adam", entropy_reg=0.01,
                  max_grad_norm=0.5, batch_size=1000, episodes_before_train=100,
                  epsilon_start=0.9, epsilon_end=0.01, epsilon_decay=200,
-                 target_tau=0.01, target_update_step=10, seed=0):
+                 target_tau=0.01, target_update_step=10, max_episodes=1000):
         super().__init__(env, state_dim, action_dim, device, memory_capacity, max_steps, reward_gamma, reward_scale,
                          done_penalty, actor_hidden_size, critic_hidden_size, actor_output_act, critic_output_act,
                          critic_loss, actor_lr, critic_lr, optimizer_type, entropy_reg, max_grad_norm, batch_size,
                          episodes_before_train, epsilon_start, epsilon_end, epsilon_decay, target_tau,
-                         target_update_step)
+                         target_update_step, max_episodes)
 
         self.actor = [
             ActorNet(self.state_dim, self.actor_hidden_size,

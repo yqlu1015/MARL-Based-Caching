@@ -31,7 +31,7 @@ class Agent(object):
                  optimizer_type="adam", entropy_reg=0.01,
                  max_grad_norm=0.5, batch_size=100, episodes_before_train=100,
                  epsilon_start=0.9, epsilon_end=0.01, epsilon_decay=200,
-                 target_tau=0.01, target_update_step=10):
+                 target_tau=0.01, target_update_step=10, max_episodes=2000):
 
         self.vf_coef = 1
         self.env = env
@@ -40,6 +40,7 @@ class Agent(object):
         self.n_agents = env.n_agents
         self.env_state = self.env.reset()
         self.n_episodes = 0
+        self.max_episodes = max_episodes
         self.n_steps = 0
         self.max_steps = max_steps
         self.roll_out_n_steps = 1
@@ -159,8 +160,10 @@ class Agent(object):
 
     # choose an action based on state with random noise added for exploration in training
     def exploration_action(self, state) -> np.ndarray:
+        # epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+        #           np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
+                  ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train)) ** 3
         if self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon:
             action = np.random.choice(self.env.n_actions, self.env.n_agents)
         else:

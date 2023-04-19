@@ -28,7 +28,7 @@ class DQN(Agent):
                          done_penalty, actor_hidden_size, critic_hidden_size, actor_output_act, critic_output_act,
                          critic_loss, actor_lr, critic_lr, optimizer_type, entropy_reg, max_grad_norm, batch_size,
                          episodes_before_train, epsilon_start, epsilon_end, epsilon_decay, target_tau,
-                         target_update_step)
+                         target_update_step, max_episodes)
 
         self.qnet = [ActorNet(self.state_dim, self.actor_hidden_size,
                               self.action_dim, self.critic_output_act).to(device)
@@ -38,7 +38,7 @@ class DQN(Agent):
                             for i in range(self.n_agents)]
         for i in range(self.n_agents):
             self.qnet_target[i].load_state_dict(self.qnet[i].state_dict())
-        self.qnet_optimizer = [Adam(self.qnet[i].parameters(), lr=self.actor_lr)
+        self.qnet_optimizer = [Adam(self.qnet[i].parameters(), lr=self.critic_lr)
                                for i in range(self.n_agents)]
 
     # agent interact with the environment to collect experience
