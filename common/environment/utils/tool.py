@@ -2,7 +2,6 @@ import random
 import torch as th
 import numpy as np
 
-
 # convert  EdgeAgentStates array/tuple to 1d array of numbers
 def states2array(states, add_ppl=True):
     states = np.array(states).flatten()
@@ -10,7 +9,6 @@ def states2array(states, add_ppl=True):
         return np.ravel([[state.popularity, state.cache] for state in states])
     else:
         return np.ravel([state.cache for state in states])
-
 
 def actions2array(actions):
     actions = np.array(actions).flatten()

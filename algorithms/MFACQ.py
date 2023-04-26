@@ -5,11 +5,11 @@ from torch.optim import Adam
 import numpy as np
 
 from common.Agent import Agent
-from common.Model import MeanValueNet, ActorNet
+from common.Model import MeanCriticNet, ActorNet
 from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor, onehot_from_logits
 
 
-class MFAC(Agent):
+class MFACQ(Agent):
 
     def __init__(self, env, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
@@ -38,12 +38,12 @@ class MFAC(Agent):
         self.actor_optimizer = [Adam(self.actor[i].parameters(), lr=self.actor_lr)
                                 for i in range(self.n_agents)]
         self.critic = [
-            MeanValueNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
-                         self.critic_output_act).to(device)
+            MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+                          self.critic_output_act).to(device)
             for i in range(self.n_agents)]
         self.critic_target = [
-            MeanValueNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
-                         self.critic_output_act).to(device)
+            MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+                          self.critic_output_act).to(device)
             for i in range(self.n_agents)]
         for i in range(self.n_agents):
             self.critic_target[i].load_state_dict(self.critic[i].state_dict())
@@ -66,43 +66,43 @@ class MFAC(Agent):
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
         next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
-        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.env.n_actions)
+        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
         global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.global_state_dim)
         next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.global_state_dim)
 
         # partial obs of each agent
         obs = [states_tensor[:, i] for i in range(self.n_agents)]
-        next_obs = [next_states_tensor.view(-1, self.n_agents, self.state_dim)[:, i] for i in range(self.n_agents)]
+        next_obs = [next_states_tensor[:, i] for i in range(self.n_agents)]
         # get joint action
         act = [index_to_one_hot_tensor(actions_index_tensor[:, i], self.action_dim) for i in range(self.n_agents)]
         next_act = [onehot_from_logits(pi(_next_obs)) for pi, _next_obs in zip(self.actor_target, next_obs)]
 
         for i in range(self.n_agents):
-            current_v = self.critic[i](global_state_tensor, mean_actions_tensor[:, i]).squeeze(1)
+            current_q = self.critic[i](global_state_tensor, act[i], mean_actions_tensor[:, i]).squeeze(1)
             # calculate next mean action
             neighbors = self.env.get_obs(i)
             next_mean_action_tensor = th.zeros_like(mean_actions_tensor[:, i], device=self.device)
             for j in neighbors:
-                next_mean_action_tensor += next_act[j]
+                next_mean_action_tensor += act[j]
             next_mean_action_tensor /= len(neighbors)
-            next_v = self.critic_target[i](next_global_state_tensor, next_mean_action_tensor).squeeze(1).detach()
-            target_v = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
+            next_q = self.critic_target[i](next_global_state_tensor, next_act[i], next_mean_action_tensor).squeeze(1).detach()
+            target_q = rewards_tensor[:, i] + self.reward_gamma * next_q * (1. - dones_tensor[:, i])
             # calculate vf loss
             self.critic_optimizer[i].zero_grad()
             if self.critic_loss == "huber":
-                vf_loss = nn.SmoothL1Loss()(current_v, target_v)
+                vf_loss = nn.SmoothL1Loss()(current_q, target_q)
             else:
-                vf_loss = nn.MSELoss()(current_v, target_v)
+                vf_loss = nn.MSELoss()(current_q, target_q)
             vf_loss.backward()
 
             # compute log action probs and target q
             actions_index = actions_index_tensor[:, i]
             actions_prob = self.actor[i](obs[i])
             log_action_prob = th.log(actions_prob.gather(1, actions_index.unsqueeze(1)).squeeze(1) + 1e-6)
-            values = current_v.detach()
+            values = current_q.detach()
             # calculate pg loss and entropy
             self.actor_optimizer[i].zero_grad()
-            pg_loss = th.mean(-log_action_prob * (target_v - values))
+            pg_loss = th.mean(-log_action_prob * values)
             neg_entropy = -th.mean(entropy(actions_prob))
 
             # loss backward
@@ -126,8 +126,10 @@ class MFAC(Agent):
         actions = np.zeros(self.n_agents, dtype='int')
         state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
         mean_actions = np.zeros((self.n_agents, self.env.n_actions))
+        # epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+        #           ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train))
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train))
+                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
 
         for i in range(self.n_agents):
             if (self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon) and not evaluation:

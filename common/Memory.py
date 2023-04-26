@@ -2,7 +2,8 @@ import random
 from collections import namedtuple
 
 Experience = namedtuple("Experience",
-                        ("states", "actions", "rewards", "next_states", "dones", "mean_actions"))
+                        ("states", "actions", "rewards", "next_states", "dones", "mean_actions", "global_states",
+                         "next_global_states"))
 
 
 class ReplayMemory(object):
@@ -15,22 +16,27 @@ class ReplayMemory(object):
         self.memory = []
         self.position = 0
 
-    def _push_one(self, state, action, reward, next_state=None, done=None, mean_action=None, ):
+    def _push_one(self, state, action, reward, next_state=None, done=None, mean_action=None,
+                  global_state=None, next_global_state=None):
         if len(self.memory) < self.capacity:
             self.memory.append(None)
-        self.memory[self.position] = Experience(state, action, reward, next_state, done, mean_action)
+        self.memory[self.position] = Experience(state, action, reward, next_state, done, mean_action,
+                                                global_state, next_global_state)
         self.position = (self.position + 1) % self.capacity
 
-    def push(self, states, actions, rewards, next_states=None, dones=None, mean_actions=None):
+    def push(self, states, actions, rewards, next_states=None, dones=None, mean_actions=None,
+             global_states=None, next_global_states=None):
         if isinstance(states, list):
             if next_states is not None and len(next_states) > 0:
-                for s, a, r, n_s, d, m_a in zip(states, actions, rewards, next_states, dones, mean_actions):
-                    self._push_one(s, a, r, n_s, d, m_a)
+                for s, a, r, n_s, d, m_a, g_s, n_g_s in zip(states, actions, rewards, next_states, dones, mean_actions,
+                                                            global_states, next_global_states):
+                    self._push_one(s, a, r, n_s, d, m_a, g_s, n_g_s)
             else:
                 for s, a, r in zip(states, actions, rewards):
                     self._push_one(s, a, r)
         else:
-            self._push_one(states, actions, rewards, next_states, dones, mean_actions)
+            self._push_one(states, actions, rewards, next_states, dones, mean_actions, global_states,
+                           next_global_states)
 
     def sample(self, batch_size):
         if batch_size > len(self.memory):

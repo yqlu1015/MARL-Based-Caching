@@ -104,7 +104,8 @@ def agg_double_list(l):
 def mean_mean_list(l):
     m = [np.mean(np.array(l_i), 0) for l_i in l]
     m_mu = np.mean(np.array(m), 0)
-    return m_mu
+    m_std = np.std(np.array(m), 0)
+    return m_mu, m_std
 
 
 def sum_mean_std(l):

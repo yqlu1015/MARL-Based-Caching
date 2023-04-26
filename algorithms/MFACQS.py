@@ -5,11 +5,11 @@ from torch.optim import Adam
 import numpy as np
 
 from common.Agent import Agent
-from common.Model import MeanValueNet, ActorNet
-from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor
+from common.Model import MeanCriticNet, ActorNet
+from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor, onehot_from_logits
 
 
-class MFACS(Agent):
+class MFACQS(Agent):
 
     def __init__(self, env, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
@@ -37,10 +37,10 @@ class MFACS(Agent):
             for _ in range(self.n_agents)]
         self.actor_optimizer = [Adam(self.actor[i].parameters(), lr=self.actor_lr)
                                 for i in range(self.n_agents)]
-        self.critic = MeanValueNet(self.n_agents * self.state_dim, self.action_dim, self.critic_hidden_size, 1,
-                                   self.critic_output_act).to(device)
-        self.critic_target = MeanValueNet(self.n_agents * self.state_dim, self.action_dim, self.critic_hidden_size, 1,
-                                          self.critic_output_act).to(device)
+        self.critic = MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+                                    self.critic_output_act).to(device)
+        self.critic_target = MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+                                           self.critic_output_act).to(device)
         for i in range(self.n_agents):
             self.actor_target[i].load_state_dict(self.actor[i].state_dict())
         self.critic_target.load_state_dict(self.critic.state_dict())
@@ -48,25 +48,7 @@ class MFACS(Agent):
 
     # agent interact with the environment to collect experience
     def interact(self):
-        # if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
-        #     self.env_state = self.env.reset()
-        #     self.n_steps = 0
-        state = self.env_state
-        actions, mean_actions = self.mean_action(state)
-        next_state, reward, done, _ = self.env.step(actions)
-        self.env_state = next_state
-
-        if done[0]:
-            if self.done_penalty is not None:
-                reward = np.ones(self.n_agents) * self.done_penalty
-            # next_state = np.zeros_like(state)
-            self.n_episodes += 1
-            self.episode_done = True
-            self.env_state = self.env.reset()
-        else:
-            self.episode_done = False
-        # self.n_steps += 1
-        self.memory.push(state, actions, reward, next_state, done, mean_actions)
+        super()._take_one_step(use_mean=True)
 
     # train on a sample batch
     def train(self):
@@ -74,49 +56,49 @@ class MFACS(Agent):
             pass
 
         batch = self.memory.sample(self.batch_size)
-        states_tensor = to_tensor(batch.states, self.device).view(-1, self.n_agents * self.state_dim)
-        actions_tensor = to_tensor(batch.actions, self.device, 'int').view(-1, self.n_agents)
+        states_tensor = to_tensor(batch.states, self.device).view(-1, self.n_agents, self.state_dim)
+        actions_index_tensor = to_tensor(batch.actions, self.device, 'int').view(-1, self.n_agents)
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
-        next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents * self.state_dim)
+        next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
-        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.env.n_actions)
-        next_actions_tensor = []
+        mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
+        global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.global_state_dim)
+        next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.global_state_dim)
 
-        # sample next actions from actor_target
-        for i in range(self.n_agents):
-            next_obs_tensor = next_states_tensor.view(-1, self.n_agents, self.state_dim)[:, i]
-            next_actions_prob_tensor = self.actor_target[i](next_obs_tensor)
-            next_actions_list = th.distributions.Categorical(next_actions_prob_tensor)
-            next_actions_index = next_actions_list.sample()
-            next_actions_tensor.append(next_actions_index)
+        # partial obs of each agent
+        obs = [states_tensor[:, i] for i in range(self.n_agents)]
+        next_obs = [next_states_tensor[:, i] for i in range(self.n_agents)]
+        # get joint action
+        act = [index_to_one_hot_tensor(actions_index_tensor[:, i], self.action_dim) for i in range(self.n_agents)]
+        next_act = [onehot_from_logits(pi(_next_obs)) for pi, _next_obs in zip(self.actor_target, next_obs)]
 
         for i in range(self.n_agents):
-            current_v = self.critic(states_tensor, mean_actions_tensor[:, i]).squeeze(1)
+            current_q = self.critic(global_state_tensor, act[i], mean_actions_tensor[:, i]).squeeze(1)
             # calculate next mean action
             neighbors = self.env.get_obs(i)
             next_mean_action_tensor = th.zeros_like(mean_actions_tensor[:, i], device=self.device)
             for j in neighbors:
-                next_mean_action_tensor += index_to_one_hot_tensor(next_actions_tensor[j], self.action_dim)
+                next_mean_action_tensor += act[j]
             next_mean_action_tensor /= len(neighbors)
-            next_v = self.critic_target(next_states_tensor, next_mean_action_tensor).squeeze(1).detach()
-            target_v = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
+            next_q = self.critic_target(next_global_state_tensor, next_act[i], next_mean_action_tensor).squeeze(
+                1).detach()
+            target_q = rewards_tensor[:, i] + self.reward_gamma * next_q * (1. - dones_tensor[:, i])
             # calculate vf loss
             self.critic_optimizer.zero_grad()
             if self.critic_loss == "huber":
-                vf_loss = nn.SmoothL1Loss()(current_v, target_v)
+                vf_loss = nn.SmoothL1Loss()(current_q, target_q)
             else:
-                vf_loss = nn.MSELoss()(current_v, target_v)
+                vf_loss = nn.MSELoss()(current_q, target_q)
             vf_loss.backward()
 
             # compute log action probs and target q
-            obs_tensor = states_tensor.view(-1, self.n_agents, self.state_dim)[:, i]
-            actions_index = actions_tensor[:, i]
-            actions_prob = self.actor[i](obs_tensor)
+            actions_index = actions_index_tensor[:, i]
+            actions_prob = self.actor[i](obs[i])
             log_action_prob = th.log(actions_prob.gather(1, actions_index.unsqueeze(1)).squeeze(1) + 1e-6)
-            values = current_v.detach()
+            values = current_q.detach()
             # calculate pg loss and entropy
             self.actor_optimizer[i].zero_grad()
-            pg_loss = th.mean(-log_action_prob * (target_v - values))
+            pg_loss = th.mean(-log_action_prob * values)
             neg_entropy = -th.mean(entropy(actions_prob))
 
             # loss backward
@@ -140,8 +122,10 @@ class MFACS(Agent):
         actions = np.zeros(self.n_agents, dtype='int')
         state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
         mean_actions = np.zeros((self.n_agents, self.env.n_actions))
+        # epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+        #           ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train))
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train)) ** 3
+                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
 
         for i in range(self.n_agents):
             if (self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon) and not evaluation:
@@ -164,6 +148,6 @@ class MFACS(Agent):
 
         return actions, mean_actions
 
-    def action(self, state):
+    def action(self, state, evaluation=False, eval_records=None):
         actions, _ = self.mean_action(state, True)
         return actions

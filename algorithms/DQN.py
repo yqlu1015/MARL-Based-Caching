@@ -30,10 +30,10 @@ class DQN(Agent):
                          episodes_before_train, epsilon_start, epsilon_end, epsilon_decay, target_tau,
                          target_update_step, max_episodes)
 
-        self.qnet = [ActorNet(self.state_dim, self.actor_hidden_size,
+        self.qnet = [ActorNet(self.state_dim, self.critic_hidden_size,
                               self.action_dim, self.critic_output_act).to(device)
                      for i in range(self.n_agents)]
-        self.qnet_target = [ActorNet(self.state_dim, self.actor_hidden_size,
+        self.qnet_target = [ActorNet(self.state_dim, self.critic_hidden_size,
                                      self.action_dim, self.critic_output_act).to(device)
                             for i in range(self.n_agents)]
         for i in range(self.n_agents):
@@ -85,10 +85,14 @@ class DQN(Agent):
             self._soft_update_target(self.qnet_target[i], self.qnet[i])
 
     # choose an action based on state for execution
-    def action(self, state):
+    def action(self, state, evaluation=False, eval_records=None):
         action = np.zeros(self.n_agents, dtype='int')
         state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
         for i in range(self.n_agents):
             state_action_values_tensor = self.qnet[i](state_tensor[:, i]).squeeze(0)
             action[i] = th.argmax(state_action_values_tensor, dim=0).item()
+            if evaluation:
+                max_values, indices = th.topk(state_action_values_tensor, 3)
+                row = np.hstack((max_values.detach().cpu().numpy(), indices.detach().cpu().numpy()))
+                eval_records.append(row)
         return action

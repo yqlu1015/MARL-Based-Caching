@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import torch as th
 from torch import nn
 from torch.optim import Adam
@@ -46,26 +48,7 @@ class MFDQN(Agent):
 
     # agent interact with the environment to collect experience
     def interact(self):
-        # if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
-        #     self.env_state = self.env.reset()
-        #     self.n_steps = 0
-        #     self.mean_actions = np.zeros((self.n_agents, self.env.n_actions))
-        state = self.env_state
-        actions, mean_actions = self.mean_action(state)
-        next_state, reward, done, _ = self.env.step(actions)
-        self.env_state = next_state
-
-        if done[0]:
-            if self.done_penalty is not None:
-                reward = np.ones(self.n_agents) * self.done_penalty
-            # next_state = np.zeros_like(state)
-            self.n_episodes += 1
-            self.episode_done = True
-            self.env_state = self.env.reset()
-        else:
-            self.episode_done = False
-        # self.n_steps += 1
-        self.memory.push(state, actions, reward, next_state, done, mean_actions)
+        super()._take_one_step(use_mean=True)
 
     # train on a sample batch
     def train(self):
@@ -114,14 +97,16 @@ class MFDQN(Agent):
             self._soft_update_target(self.qnet_target[i], self.qnet[i])
 
     # get actions and mean actions by alternatively updating policy and mean action
-    def mean_action(self, state, evaluation=False):
+    def mean_action(self, state, evaluation=False) -> Tuple[np.ndarray, np.ndarray]:
 
         state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
         actions = np.zeros(self.n_agents, dtype='int')
         mean_actions = self.mean_actions_e if evaluation else self.mean_actions
         mean_actions_tensor = to_tensor(mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
+        # epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+        #           ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train))
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train)) ** 3
+                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
 
         # update policies
         for i in range(self.n_agents):
@@ -143,6 +128,6 @@ class MFDQN(Agent):
 
         return actions, mean_actions
 
-    def action(self, state):
+    def action(self, state, evaluation=False, eval_records=None):
         actions, _ = self.mean_action(state, True)
         return actions

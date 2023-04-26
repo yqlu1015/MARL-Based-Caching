@@ -119,7 +119,7 @@ class DDPG(Agent):
             self._soft_update_target(self.critic_target[i], self.critic[i])
             self._soft_update_target(self.actor_target[i], self.actor[i])
 
-    def action(self, state):
+    def action(self, state, evaluation=False, eval_records=None):
         state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
         actions = np.zeros(self.n_agents, dtype='int')
 

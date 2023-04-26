@@ -1,4 +1,5 @@
 import copy
+from typing import Tuple
 
 import numpy as np
 
@@ -38,7 +39,9 @@ class Agent(object):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.n_agents = env.n_agents
-        self.env_state = self.env.reset()
+        self.global_state_dim = env.n_users * env.n_models
+        self.env_obs = self.env.reset()
+        self.env_state = self.env.get_global_state()
         self.n_episodes = 0
         self.max_episodes = max_episodes
         self.n_steps = 0
@@ -81,63 +84,76 @@ class Agent(object):
         pass
 
     # take one step
-    def _take_one_step(self):
+    def _take_one_step(self, use_mean=False):
         # if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
-        #     self.env_state = self.env.reset()
+        #     self.env_obs = self.env.reset()
         #     self.n_steps = 0
+        obs = self.env_obs
         state = self.env_state
-        action = self.exploration_action(state)
-        next_state, reward, done, _ = self.env.step(action)
+        if use_mean:
+            action, mean_action = self.mean_action(obs)
+            self.mean_actions = mean_action
+        else:
+            action = self.exploration_action(obs)
+        next_obs, reward, done, info = self.env.step(action)
+        self.env_obs = next_obs
+        next_state = info[2]
         self.env_state = next_state
 
         if done[0]:
             if self.done_penalty is not None:
                 reward = np.ones(self.n_agents) * self.done_penalty
             # next_state = np.zeros_like(state)
-            # self.env_state = self.env.reset()
+            # self.env_obs = self.env.reset()
             self.n_episodes += 1
             self.episode_done = True
-            self.env_state = self.env.reset()
+            self.env_obs = self.env.reset()
+            self.env_state = self.env.get_global_state()
         else:
             self.episode_done = False
         # self.n_steps += 1
-        self.memory.push(state, action, reward, next_state, done)
+        if use_mean:
+            self.memory.push(obs, action, reward, next_obs, done, mean_actions=mean_action, global_states=state,
+                             next_global_states=next_state)
+        else:
+            self.memory.push(obs, action, reward, next_obs, done, global_states=state, next_global_states=next_state)
 
     # take n_agents steps
-    def _take_n_steps(self):
-        if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
-            self.env_state = self.env.reset()
-            self.n_steps = 0
-        states = []
-        actions = []
-        rewards = []
-        # take n_agents steps
-        for i in range(self.roll_out_n_steps):
-            states.append(self.env_state)
-            action = self.exploration_action(self.env_state)
-            next_state, reward, done, _ = self.env.step(action)
-            next_state = next_state
-            actions.append(action)
-            if done[0] and self.done_penalty is not None:
-                reward = np.ones(self.n_agents) * self.done_penalty
-            rewards.append(reward)
-            final_state = next_state
-            self.env_state = next_state
-            if done[0]:
-                self.env_state = self.env.reset()
-                break
-        # discount reward
-        if done[0]:
-            final_value = np.zeros(self.n_agents)
-            self.n_episodes += 1
-            self.episode_done = True
-        else:
-            self.episode_done = False
-            final_action = self.action(final_state)
-            final_value = self.value(final_state, final_action)
-        rewards = self._discount_reward(rewards, final_value)
-        self.n_steps += 1
-        self.memory.push(states, actions, rewards)
+    # no latest implementation
+    # def _take_n_steps(self):
+    #     if (self.max_steps is not None) and (self.n_steps >= self.max_steps):
+    #         self.env_obs = self.env.reset()
+    #         self.n_steps = 0
+    #     states = []
+    #     actions = []
+    #     rewards = []
+    #     # take n_agents steps
+    #     for i in range(self.roll_out_n_steps):
+    #         states.append(self.env_obs)
+    #         action = self.exploration_action(self.env_obs)
+    #         next_state, reward, done, _ = self.env.step(action)
+    #         next_state = next_state
+    #         actions.append(action)
+    #         if done[0] and self.done_penalty is not None:
+    #             reward = np.ones(self.n_agents) * self.done_penalty
+    #         rewards.append(reward)
+    #         final_state = next_state
+    #         self.env_obs = next_state
+    #         if done[0]:
+    #             self.env_obs = self.env.reset()
+    #             break
+    #     # discount reward
+    #     if done[0]:
+    #         final_value = np.zeros(self.n_agents)
+    #         self.n_episodes += 1
+    #         self.episode_done = True
+    #     else:
+    #         self.episode_done = False
+    #         final_action = self.action(final_state)
+    #         final_value = self.value(final_state, final_action)
+    #     rewards = self._discount_reward(rewards, final_value)
+    #     self.n_steps += 1
+    #     self.memory.push(states, actions, rewards)
 
     # discount roll out rewards
     def _discount_reward(self, rewards, final_value):
@@ -158,12 +174,16 @@ class Agent(object):
     def train(self):
         pass
 
+    # get actions and mean actions by alternatively updating policy and mean action
+    def mean_action(self, state, evaluation=False) -> Tuple[np.ndarray, np.ndarray]:
+        pass
+
     # choose an action based on state with random noise added for exploration in training
     def exploration_action(self, state) -> np.ndarray:
-        # epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-        #           np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                  ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train)) ** 3
+                  np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
+        # epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+        #           ((self.max_episodes - self.n_episodes) / (self.max_episodes - self.episodes_before_train))
         if self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon:
             action = np.random.choice(self.env.n_actions, self.env.n_agents)
         else:
@@ -171,7 +191,7 @@ class Agent(object):
         return action
 
     # choose an action based on state for execution
-    def action(self, state) -> np.ndarray:
+    def action(self, state, evaluation=False, eval_records=None) -> np.ndarray:
         pass
 
     # evaluate value for a state-action pair
@@ -182,46 +202,59 @@ class Agent(object):
     def evaluation(self, env: EdgeMultiAgentEnv, eval_episodes=10, seed=0):
         rewards = []
         infos = []
-        rewards_cache = []
+        rewards_qoe = []  # average qoe at edge
         rewards_switch = []
         users_info = []
-        stats = {'cache': [], 'delay': [], 'ratio': []}
+        stats = {'cache': [], 'delay': [], 'ratio': [], 'switch': [], 'qoe': []}
+        eval_records = []  # top 3 actor values and indices
         # seed_everything(seed)
 
         for i in range(eval_episodes):
             self.mean_actions_e = np.zeros((self.n_agents, self.action_dim))
             rewards_i = []
-            rewards_cache_i = []
+            rewards_qoe_i = []
             rewards_switch_i = []
             state = env.reset()
-            action = self.action(state)
-            state, reward, done, info = env.step(action)
+            # action = self.action(state)
+            # state, reward, done, info = env.step(action)
+            #
+            # done = done[0] if isinstance(done, np.ndarray) else done
+            # rewards_i.append(reward)
+            # rewards_qoe_i.append(info[0])
+            # rewards_switch_i.append(info[1])
+            # stats['delay'].append(env.world.average_delay)
+            # stats['ratio'].append(env.world.cache_hit_ratio)
+            # stats['cache'].append(env.world.cache_stat)
+            # stats['switch'].append(env.world.switch_sum)
+            # delays = []
+            # switches = []
+            # for agent in env.world.agents:
+            #     delays.append(agent.avg_qoe)
+            #     switches.append(agent.switch)
+            # stats['agent_delay'].append(delays)
+            # stats['agent_switch'].append(switches)
 
-            done = done[0] if isinstance(done, np.ndarray) else done
-            rewards_i.append(reward)
-            rewards_cache_i.append(info[0])
-            rewards_switch_i.append(info[1])
-            stats['delay'].append(env.world.average_delay)
-            stats['ratio'].append(env.world.cache_hit_ratio)
-            stats['cache'].append(env.world.cache_stat)
-
+            done = False
             while not done:
-                action = self.action(state)
+                action = self.action(state, evaluation=True, eval_records=eval_records)
                 state, reward, done, info = env.step(action)
 
                 done = done[0] if isinstance(done, np.ndarray) else done
                 rewards_i.append(reward)
-                rewards_cache_i.append(info[0])
+                rewards_qoe_i.append(info[0])
                 rewards_switch_i.append(info[1])
                 stats['delay'].append(env.world.average_delay)
                 stats['ratio'].append(env.world.cache_hit_ratio)
                 stats['cache'].append(env.world.cache_stat)
+                stats['switch'].append(env.world.switch_sum)
+                stats['qoe'].append(env.world.avg_qoe)
 
             rewards.append(rewards_i)
-            rewards_cache.append(rewards_cache_i)
+            rewards_qoe.append(rewards_qoe_i)
             rewards_switch.append(rewards_switch_i)
             infos.append(env.state_info())
             users_info.append(env.users_info())
+            stats['eval_records'] = eval_records
 
 
-        return rewards, infos, rewards_cache, rewards_switch, users_info, stats
+        return rewards, infos, rewards_qoe, rewards_switch, users_info, stats

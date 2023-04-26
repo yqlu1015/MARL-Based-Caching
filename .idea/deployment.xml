@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="cse_server" confirmBeforeUploading="false" showEqualInSync="true">
+  <component name="PublishConfigData" autoUpload="Always" serverName="pytorch_docker" confirmBeforeUploading="false" showEqualInSync="true">
     <option name="confirmBeforeUploading" value="false" />
     <serverData>
       <paths name="cse_server">

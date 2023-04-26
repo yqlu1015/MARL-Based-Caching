@@ -128,7 +128,7 @@ class MeanQNet(nn.Module):
         return out
 
 
-class MeanCriticNetDDPG(nn.Module):
+class MeanCriticNet(nn.Module):
     """
     A network for mf-ac with state, action and mean action as input
     """

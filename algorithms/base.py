@@ -32,7 +32,7 @@ class Base(Agent):
     def interact(self):
         super()._take_one_step()
 
-    def action(self, state) -> np.ndarray:
+    def action(self, state, evaluation=False, eval_records=None) -> np.ndarray:
         action = np.random.choice(self.env.n_actions, self.n_agents)
         return action
 
