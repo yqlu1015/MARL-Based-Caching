@@ -8,7 +8,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH -c 4
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=11910718@mail.sustech.edu.cn
+#SBATCH --mail-user=xxx@gmail.com
 
 source activate edge
 python run_comp_2.py
