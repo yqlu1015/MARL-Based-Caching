@@ -1,11 +1,18 @@
 import copy
-from typing import Tuple
+import json
+import os
+import time
+from typing import Tuple, List
 
 import numpy as np
+from torch import nn
+import torch as th
 
 from common.Memory import ReplayMemory
 from common.environment.Environment import EdgeMultiAgentEnv
 from common.environment.utils.tool import seed_everything
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Agent(object):
@@ -23,6 +30,7 @@ class Agent(object):
     - value: evaluate value for a state-action pair
     - evaluation: evaluation a learned agent
     """
+
     def __init__(self, env: EdgeMultiAgentEnv, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
                  reward_gamma=0.99, reward_scale=1., done_penalty=None,
@@ -39,7 +47,7 @@ class Agent(object):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.n_agents = env.n_agents
-        self.global_state_dim = env.n_users * env.n_models
+        self.global_state_dim = env.n_models * 2 + env.n_users * env.n_models
         self.env_obs = self.env.reset()
         self.env_state = self.env.get_global_state()
         self.n_episodes = 0
@@ -78,6 +86,13 @@ class Agent(object):
 
         self.mean_actions = None
         self.mean_actions_e = None
+
+        self.actor: List[nn.Module] = []
+        self.critic: List[nn.Module] = []
+        self.qnet: List[nn.Module] = []
+        self.actor_target: List[nn.Module] = []
+        self.critic_target: List[nn.Module] = []
+        self.qnet_target: List[nn.Module] = []
 
     # agent interact with the environment to collect experience
     def interact(self):
@@ -175,7 +190,7 @@ class Agent(object):
         pass
 
     # get actions and mean actions by alternatively updating policy and mean action
-    def mean_action(self, state, evaluation=False) -> Tuple[np.ndarray, np.ndarray]:
+    def mean_action(self, state) -> Tuple[np.ndarray, np.ndarray]:
         pass
 
     # choose an action based on state with random noise added for exploration in training
@@ -187,7 +202,7 @@ class Agent(object):
         if self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon:
             action = np.random.choice(self.env.n_actions, self.env.n_agents)
         else:
-            action = self.action(state)
+            action = self.action(state, evaluation=False)
         return action
 
     # choose an action based on state for execution
@@ -237,6 +252,7 @@ class Agent(object):
             done = False
             while not done:
                 action = self.action(state, evaluation=True, eval_records=eval_records)
+                # action = self.exploration_action(state)
                 state, reward, done, info = env.step(action)
 
                 done = done[0] if isinstance(done, np.ndarray) else done
@@ -256,5 +272,70 @@ class Agent(object):
             users_info.append(env.users_info())
             stats['eval_records'] = eval_records
 
-
         return rewards, infos, rewards_qoe, rewards_switch, users_info, stats
+
+    def save_models(self, algo_id: str):
+        time_str = time.strftime('%m_%d_%H_%M')
+        if self.actor:
+            for i, (actor, actor_target) in enumerate(zip(self.actor, self.actor_target)):
+                path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_actor_{i}.pt"
+                th.save(actor.state_dict(), path)
+                path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_actor_target_{i}.pt"
+                th.save(actor_target.state_dict(), path)
+
+        if self.critic and not isinstance(self.critic, nn.Module):
+            for i, (critic, critic_target) in enumerate(zip(self.critic, self.critic_target)):
+                path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_critic_{i}.pt"
+                th.save(critic.state_dict(), path)
+                path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_critic_target_{i}.pt"
+                th.save(critic_target.state_dict(), path)
+
+        if self.critic and isinstance(self.critic, nn.Module):
+            path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_critic.pt"
+            path1 = f"{ROOT_DIR}/models/{time_str}_{algo_id}_critic_target.pt"
+            th.save(self.critic.state_dict(), path)
+            th.save(self.critic_target.state_dict(), path1)
+
+        if self.qnet:
+            for i, (actor, actor_target) in enumerate(zip(self.qnet, self.qnet_target)):
+                path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_qnet_{i}.pt"
+                th.save(actor.state_dict(), path)
+                path = f"{ROOT_DIR}/models/{time_str}_{algo_id}_qnet_target_{i}.pt"
+                th.save(actor_target.state_dict(), path)
+
+    def load_models(self, paths: dict):
+        if paths['actor']:
+            for i, (actor, actor_target) in enumerate(zip(self.actor, self.actor_target)):
+                path = paths['actor'][i]
+                actor.load_state_dict(th.load(path))
+                path = path['actor_target'][i]
+                actor_target.load_state_dict(th.load(path))
+
+        if paths['critic'] and not isinstance(paths['critic'], str):
+            for i, (critic, critic_target) in enumerate(zip(self.critic, self.critic_target)):
+                path = paths['critic'][i]
+                critic.load_state_dict(th.load(path))
+                path = paths['critic_target'][i]
+                critic_target.load_state_dict(th.load(path))
+
+        if paths['critic'] and isinstance(paths['critic'], str):
+            path = paths['critic']
+            path1 = paths['critic_target']
+            self.critic.load_state_dict(th.load(path))
+            self.critic_target.load_state_dict(th.load(path1))
+
+        if paths['qnet']:
+            for i, (actor, actor_target) in enumerate(zip(self.qnet, self.qnet_target)):
+                path = paths['qnet'][i]
+                actor.load_state_dict(th.load(path))
+                path = paths['qnet_target'][i]
+                actor_target.load_state_dict(th.load(path))
+
+    def save_memory(self, algo_id: str):
+        time_str = time.strftime('%m_%d_%H_%M')
+        with open(f'{ROOT_DIR}/memory/{time_str}/{algo_id}', 'w') as fp:
+            json.dump(self.memory, fp)
+
+    def load_memory(self, path):
+        with open(path, 'r') as fp:
+            self.memory = json.load(fp)

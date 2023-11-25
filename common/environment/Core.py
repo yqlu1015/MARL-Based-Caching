@@ -229,6 +229,7 @@ class EdgeWorld(object):
                 self.observations[m].popularity = self.observations[m].popularity / norm
 
         self.cache_hit_ratio /= np.sum(self.requests_next)
+        self.switch_sum /= self.n_agents
 
     # update cached dnns for a particular agent
     def _update_cache(self):

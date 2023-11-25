@@ -13,12 +13,12 @@ from algorithms.base import Base
 
 DEVICE = th.device('cuda' if th.cuda.is_available() else 'cpu')
 
-EPISODES_BEFORE_TRAIN = 100
-MAX_EPISODES = 3000 + EPISODES_BEFORE_TRAIN  # 3000
+EPISODES_BEFORE_TRAIN = 10
+MAX_EPISODES = 4000 + EPISODES_BEFORE_TRAIN  # 3000
 EVAL_EPISODES = 1
 EVAL_INTERVAL = 10  # default=5
 
-MAX_STEPS = 500  # max steps to explore the environment
+MAX_STEPS = 300  # max steps to explore the environment
 EVAL_MAX_STEPS = 100
 TARGET_UPDATE_INTERVAL = 10  # target net's update interval when using hard update
 TARGET_TAU = 0.01  # target net's soft update parameter, default 1e-3
@@ -28,11 +28,11 @@ N_USERS = 3 * N_AGENTS  # reasonable density
 N_REQUESTS = 10  # time slot 1h, 10 tasks/s
 AGENT_CAPACITY = 1.6  # content size mean = 1 default=1.6
 AGENT_VIEW = 2
-TEMPERATURE = 1.
+TEMPERATURE = 0.1
 QOE_FACTOR = 1
 ACCURACY_FACTOR = 1
 
-MEMORY_CAPACITY = 2 * 10 ** 5
+MEMORY_CAPACITY = 3 * 10 ** 5
 BATCH_SIZE = 256  # 256 for q, 64 for ac
 ACTOR_LR = 5e-5
 CRITIC_LR = 1e-4
@@ -40,9 +40,9 @@ ACTOR_HIDDEN_SIZE = 128
 CRITIC_HIDDEN_SIZE = 64  # 128 for q
 CRITIC_LOSS = "mse"
 MAX_GRAD_NORM = None
-ENTROPY_REG = 0.8
+ENTROPY_REG = 0.08
 
-REWARD_DISCOUNTED_GAMMA = 0.9
+REWARD_DISCOUNTED_GAMMA = 0.95
 
 EPSILON_START = 1.
 EPSILON_END = 0.
@@ -55,11 +55,11 @@ RANDOM_SEED = 2023
 
 #  run MARL algorithm with different settings of hyperparameters
 def run_params(algo_id: str, algo_handle: Type[Agent], lrc=True, lra=False):
-    n_agents = 3
+    n_agents = 5
     n_users = 3 * n_agents
     agent_view = 2
     max_episodes = 1000 + EPISODES_BEFORE_TRAIN
-    agent_capacity = 3
+    agent_capacity = 1.6
     env = EdgeMultiAgentEnv(n_agents=n_agents, n_users=n_users, agent_capacity=agent_capacity, agent_view=agent_view,
                             n_requests=N_REQUESTS, max_steps=MAX_STEPS, temperature=TEMPERATURE,
                             eta=QOE_FACTOR, beta=ACCURACY_FACTOR, seed=RANDOM_SEED)
@@ -67,6 +67,7 @@ def run_params(algo_id: str, algo_handle: Type[Agent], lrc=True, lra=False):
                                  agent_view=agent_view,
                                  n_requests=N_REQUESTS, max_steps=EVAL_MAX_STEPS, temperature=TEMPERATURE,
                                  eta=QOE_FACTOR, beta=ACCURACY_FACTOR, seed=RANDOM_SEED)
+    print(env.n_actions)
     state_dim = env.n_models * 2
     action_dim = env.n_actions
     actor_output_act = env.action_values_softmax
@@ -360,19 +361,21 @@ def run_cache(algo_id: str, algo_handle: Type[Agent]):
 
 
 # compare convergence of several algorithms
-def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True, change=False):
+def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True, change=False, paths=None):
     episodes_before_train = 100
-    max_episodes = 4000 + episodes_before_train
-    epsilon_decay = (max_episodes - episodes_before_train) / 3.
-    n_agents = 5
-    n_users = 3 * n_agents
+    max_episodes = 3000 + episodes_before_train
+    epsilon_decay = (max_episodes - episodes_before_train) / 2.
+    n_agents = 10
+    n_users = 5 * n_agents
     agent_view = 2  # 4 if n_agents=10
-    agent_capacity = AGENT_CAPACITY  # 1.5 if n_agents=10
+    agent_capacity = 1.6  # 1.5 if n_agents=10
     bs = 64  # 256 for q, 64 for ac
-    lra = 5e-5
+    memory_size = 3 * 10 ** 5
+    lra = 1e-5
     lrc = 1e-4
     mid_dim_a = 128
-    mid_dim_c = 512  # 128 for q
+    mid_dim_c = 64  # 128 for q
+    zipf_param = 0.8
     # episodes = np.arange(0, max_episodes - episodes_before_train, EVAL_INTERVAL)
 
     for i, (algo_id, algo_handle) in enumerate(zip(algo_ids, algo_handles)):
@@ -390,12 +393,12 @@ def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True,
                                 agent_view=agent_view,
                                 n_requests=N_REQUESTS, max_steps=MAX_STEPS, temperature=TEMPERATURE,
                                 eta=QOE_FACTOR,
-                                beta=ACCURACY_FACTOR, seed=RANDOM_SEED, add_ppl=add_ppl)
+                                beta=ACCURACY_FACTOR, seed=RANDOM_SEED, add_ppl=add_ppl, zipf_param=zipf_param)
         env_eval = EdgeMultiAgentEnv(n_agents=n_agents, n_users=n_users, agent_capacity=agent_capacity,
                                      agent_view=agent_view,
                                      n_requests=N_REQUESTS, max_steps=EVAL_MAX_STEPS, temperature=TEMPERATURE,
                                      eta=QOE_FACTOR,
-                                     beta=ACCURACY_FACTOR, seed=RANDOM_SEED, add_ppl=add_ppl)
+                                     beta=ACCURACY_FACTOR, seed=RANDOM_SEED, add_ppl=add_ppl, zipf_param=zipf_param)
         print(env.world.model_sizes)
         print(env.n_actions)
 
@@ -405,7 +408,7 @@ def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True,
         critic_output_act = identity
 
         algo = algo_handle(env=env, state_dim=state_dim, action_dim=action_dim,
-                           device=DEVICE, memory_capacity=MEMORY_CAPACITY, max_steps=MAX_STEPS,
+                           device=DEVICE, memory_capacity=memory_size, max_steps=MAX_STEPS,
                            reward_gamma=REWARD_DISCOUNTED_GAMMA, done_penalty=DONE_PENALTY,
                            actor_hidden_size=mid_dim_a, critic_hidden_size=mid_dim_c,
                            actor_output_act=actor_output_act, critic_output_act=critic_output_act,
@@ -416,6 +419,9 @@ def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True,
                            epsilon_end=EPSILON_END, epsilon_decay=epsilon_decay, target_tau=TARGET_TAU,
                            target_update_step=TARGET_UPDATE_INTERVAL, max_episodes=max_episodes)
         # np.random.seed(RANDOM_SEED)
+        if paths is not None:
+            algo.load_models(paths[i])
+        # algo.save_models(algo_id)
 
         train_time = eval_time = 0.
         interact_start_time = start_time = time.time()
@@ -487,19 +493,22 @@ def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True,
         df = pd.DataFrame(data, columns=cols)
         df.to_csv("./output/%s_%s_data.csv" % (time_str, algo_id), index=False, float_format='%.4f')
 
-        if algo_id == 'iql':
+        if algo_id != 'random':
             records = np.array(eval_records).reshape(-1, 6)
             extended_episodes = np.repeat(e, EVAL_MAX_STEPS)
             data = np.c_[extended_episodes, records]
             cols = ['episode', 'value 0', 'value 1', 'value 2', 'index 0', 'index 1', 'index 2']
             df = pd.DataFrame(data, columns=cols)
-            df.to_csv("./output/%s_%s_q_values.csv" % (time_str, algo_id), index=False, float_format='%.4f')
+            df.to_csv("./output/%s_%s_actor_values.csv" % (time_str, algo_id), index=False, float_format='%.4f')
 
         method = 'comp' if not change else 'change'
         save_parameters(algo_id=algo_id, time_str=time_str, method=method, train_time=train_time, eval_time=eval_time,
                         total_time=total_time, n_agent=n_agents, user_density=3, agent_view=agent_view,
                         max_episodes=max_episodes, episodes_before_train=episodes_before_train,
-                        epsilon_decay=epsilon_decay)
+                        epsilon_decay=epsilon_decay, n_model_types=env.n_models, actor_lr=lra, critic_lr=lrc)
+
+        # algo.save_models(algo_id)
+        # algo.save_memory(algo_id)
 
     # time_str = time.strftime('%m_%d_%H_%M')
     # plot_delay(average_delays, cache_hit_ratio, episodes, time_str, algo_ids)
@@ -507,10 +516,11 @@ def run_comp(algo_ids: List[str], algo_handles: List[Type[Agent]], add_ppl=True,
 
 def save_parameters(algo_id: str, time_str: str, method: str, train_time: float, eval_time: float, total_time: float,
                     n_agent: int, user_density: int, agent_view: int, max_episodes: int,
-                    episodes_before_train=EPISODES_BEFORE_TRAIN, epsilon_decay=EPSILON_DECAY):
+                    episodes_before_train=EPISODES_BEFORE_TRAIN, epsilon_decay=EPSILON_DECAY, n_model_types=10,
+                    actor_lr=1e-5, critic_lr=1e-4):
     parameters = f"algo_id: {algo_id}, random seed: {RANDOM_SEED},\n" \
                  f"n_agents: {n_agent},\nuser_density: {user_density},\n" \
-                 f"n_requests: {N_REQUESTS},\n" \
+                 f"n_requests: {N_REQUESTS}, n_model_types: {n_model_types},\n" \
                  f"agent_capacity: {AGENT_CAPACITY},\nagent_view: {agent_view},\n" \
                  f"QoE factor: {QOE_FACTOR}, accuracy factor: {ACCURACY_FACTOR}\n" \
                  f"actor_hidden_size: {ACTOR_HIDDEN_SIZE}, critic_hidden_size: {CRITIC_HIDDEN_SIZE},\n" \

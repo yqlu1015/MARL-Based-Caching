@@ -9,7 +9,7 @@ from common.Model import MeanValueNet, ActorNet
 from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor, onehot_from_logits
 
 
-class MFAC(Agent):
+class MFACS(Agent):
 
     def __init__(self, env, state_dim, action_dim, device='cpu',
                  memory_capacity=10000, max_steps=10000,
@@ -37,19 +37,14 @@ class MFAC(Agent):
             for _ in range(self.n_agents)]
         self.actor_optimizer = [Adam(self.actor[i].parameters(), lr=self.actor_lr)
                                 for i in range(self.n_agents)]
-        self.critic = [
-            MeanValueNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
-                         self.critic_output_act).to(device)
-            for i in range(self.n_agents)]
-        self.critic_target = [
-            MeanValueNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
-                         self.critic_output_act).to(device)
-            for i in range(self.n_agents)]
+        self.critic = MeanValueNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+                                   self.critic_output_act).to(device)
+        self.critic_target = MeanValueNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+                                          self.critic_output_act).to(device)
         for i in range(self.n_agents):
-            self.critic_target[i].load_state_dict(self.critic[i].state_dict())
             self.actor_target[i].load_state_dict(self.actor[i].state_dict())
-        self.critic_optimizer = [Adam(self.critic[i].parameters(), lr=self.critic_lr)
-                                 for i in range(self.n_agents)]
+        self.critic_target.load_state_dict(self.critic.state_dict())
+        self.critic_optimizer = Adam(self.critic.parameters(), lr=self.critic_lr)
 
     # agent interact with the environment to collect experience
     def interact(self):
@@ -77,17 +72,17 @@ class MFAC(Agent):
         next_act = [onehot_from_logits(pi(_next_obs)) for pi, _next_obs in zip(self.actor_target, next_obs)]
 
         for i in range(self.n_agents):
-            current_v = self.critic[i](global_state_tensor[:, i], mean_actions_tensor[:, i]).squeeze(1)
+            current_v = self.critic(global_state_tensor[:, i], mean_actions_tensor[:, i]).squeeze(1)
             # calculate next mean action
             neighbors = self.env.get_obs(i)
             next_mean_action_tensor = th.zeros_like(mean_actions_tensor[:, i], device=self.device)
             for j in neighbors:
                 next_mean_action_tensor += next_act[j]
             next_mean_action_tensor /= len(neighbors)
-            next_v = self.critic_target[i](next_global_state_tensor[:, i], next_mean_action_tensor).squeeze(1)
+            next_v = self.critic_target(next_global_state_tensor[:, i], next_mean_action_tensor).squeeze(1)
             target_v = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
             # calculate vf loss
-            self.critic_optimizer[i].zero_grad()
+            self.critic_optimizer.zero_grad()
             if self.critic_loss == "huber":
                 vf_loss = nn.SmoothL1Loss()(current_v, target_v.detach())
             else:
@@ -103,7 +98,6 @@ class MFAC(Agent):
             self.actor_optimizer[i].zero_grad()
             pg_loss = th.mean(-log_action_prob * (target_v - values))
             neg_entropy = -th.mean(entropy(actions_prob))
-            neg_entropy = 0
 
             # loss backward
             actor_loss = pg_loss + self.entropy_reg * neg_entropy
@@ -111,14 +105,14 @@ class MFAC(Agent):
 
             # optimizer step
             if self.max_grad_norm is not None:
-                nn.utils.clip_grad_norm_(self.critic[i].parameters(), self.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                 nn.utils.clip_grad_norm_(self.actor[i].parameters(), self.max_grad_norm)
-            self.critic_optimizer[i].step()
+            self.critic_optimizer.step()
             self.actor_optimizer[i].step()
 
         for i in range(self.n_agents):
-            self._soft_update_target(self.critic_target[i], self.critic[i])
             self._soft_update_target(self.actor_target[i], self.actor[i])
+        self._soft_update_target(self.critic_target, self.critic)
 
     # get actions and mean actions by alternatively updating policy and mean action
     def mean_action(self, state):

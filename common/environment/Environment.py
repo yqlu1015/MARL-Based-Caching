@@ -91,7 +91,8 @@ class EdgeMultiAgentEnv(gym.Env):
 
     # get reward for a particular agent
     def _get_reward(self, agent) -> float:
-        return self.eta * self.world.avg_qoe - 0 * self.world.switch_sum
+        return self.eta * self.world.avg_qoe - self.world.switch_sum
+        # return agent.avg_qoe - agent.switch
         # return (agent.avg_delay_old - agent.avg_qoe) + \
         #        self.eta * (self.world.average_delay_old - self.world.average_delay)
 
@@ -128,7 +129,10 @@ class EdgeMultiAgentEnv(gym.Env):
     # global state: all requests, last caching decisions and agent popularity
     def get_global_state(self) -> np.ndarray:
         requests_num = np.ravel(self.world.requests_next) / np.max(self.world.requests_next)
-        return requests_num
+        return np.ravel([np.concatenate((requests_num, obs.popularity, obs.cache)) for obs in self.world.observations])
+        # return requests_num
+        # states = self.world.observations
+        # return np.ravel([state.popularity for state in states])
 
     # get dones for a particular agent
     def _get_done(self, agent) -> bool:
@@ -411,4 +415,74 @@ models = [
         Model(name='MNASNet-1.0', type='Type 10', accuracy=73.456, model_size=169., time_c=3.49, time_e=28.1,
               input_size=1.204)
     ]
+    # [
+    #     Model(name='ResNet-50', type='Type 11', accuracy=76.13, model_size=97.8, time_c=0.51, time_e=9.52,
+    #           input_size=1.204),
+    #     Model(name='ResNet-101', type='Type 11', accuracy=77.374, model_size=170.5, time_c=0.78, time_e=14.9,
+    #           input_size=1.204),
+    #     Model(name='ResNet-152', type='Type 11', accuracy=78.312, model_size=230.4, time_c=1.03, time_e=20.72,
+    #           input_size=1.204)
+    # ],
+    # [
+    #     Model(name='ResNet-18', type='Type 12', accuracy=69.758, model_size=44.7, time_c=0.38, time_e=6.07,
+    #           input_size=1.204),
+    #     Model(name='ResNet-34', type='Type 12', accuracy=73.314, model_size=83.3, time_c=0.56, time_e=9.08,
+    #           input_size=1.204),
+    # ],
+    # [
+    #     Model(name='ResNeXt-50(32x4d)', type='Type 13', accuracy=77.618, model_size=95.8, time_c=0.67, time_e=14.76,
+    #           input_size=1.204),
+    #     Model(name='ResNeXt-101(32x8d)', type='Type 13', accuracy=79.312, model_size=339.6, time_c=0.67, time_e=35.69,
+    #           input_size=1.204),
+    # ],
+    # [
+    #     Model(name='VGG-11', type='Type 14', accuracy=69.02, model_size=506.8, time_c=0.24, time_e=10.36,
+    #           input_size=1.204),
+    #     Model(name='VGG-13', type='Type 14', accuracy=69.928, model_size=507.5, time_c=0.28, time_e=10.51,
+    #           input_size=1.204),
+    #     Model(name='VGG-16', type='Type 14', accuracy=71.592, model_size=507.8, time_c=0.28, time_e=11.29,
+    #           input_size=1.204),
+    #     Model(name='VGG-19', type='Type 14', accuracy=72.376, model_size=508.1, time_c=0.32, time_e=9.59,
+    #           input_size=1.204)
+    # ],
+    # [
+    #     Model(name='VGG-11_BN', type='Type 15', accuracy=70.37, model_size=506.9, time_c=0.27, time_e=13.17,
+    #           input_size=1.204),
+    #     Model(name='VGG-13_BN', type='Type 15', accuracy=71.586, model_size=507.6, time_c=0.27, time_e=14.82,
+    #           input_size=1.204),
+    #     Model(name='VGG-16_BN', type='Type 15', accuracy=73.36, model_size=527.9, time_c=0.29, time_e=12.76,
+    #           input_size=1.204),
+    #     Model(name='VGG-19_BN', type='Type 15', accuracy=74.218, model_size=548.1, time_c=0.34, time_e=14.97,
+    #           input_size=1.204)
+    # ],
+    # [
+    #     Model(name='DenseNet-121', type='Type 16', accuracy=74.434, model_size=30.8, time_c=1.93, time_e=20.18,
+    #           input_size=1.204),
+    #     Model(name='DenseNet-169', type='Type 16', accuracy=75.6, model_size=54.7, time_c=2.90, time_e=29.89,
+    #           input_size=1.204)
+    # ],
+    # [
+    #     Model(name='DenseNet-201', type='Type 17', accuracy=76.896, model_size=77.4, time_c=3.98, time_e=41.25,
+    #           input_size=1.204),
+    #     Model(name='DenseNet-161', type='Type 17', accuracy=77.138, model_size=110.4, time_c=2.19, time_e=33.28,
+    #           input_size=1.204)
+    # ],
+    # [
+    #     Model(name='Inception-v1', type='Type 18', accuracy=69.778, model_size=49.7, time_c=2.91, time_e=17.77,
+    #           input_size=2.146),
+    #     Model(name='Inception-v3', type='Type 18', accuracy=77.294, model_size=103.9, time_c=4.21, time_e=86.44,
+    #           input_size=2.146)
+    # ],
+    # [
+    #     Model(name='SqueezeNet-v1.0', type='Type 19', accuracy=58.092, model_size=4.8, time_c=1.98, time_e=2.04,
+    #           input_size=1.237),
+    #     Model(name='SqueezeNet-v1.1', type='Type 19', accuracy=58.178, model_size=4.7, time_c=2.27, time_e=8.56,
+    #           input_size=1.237)
+    # ],
+    # [
+    #     Model(name='MNASNet-0.5', type='Type 20', accuracy=67.734, model_size=86., time_c=2.5, time_e=18.1,
+    #           input_size=1.204),
+    #     Model(name='MNASNet-1.0', type='Type 20', accuracy=73.456, model_size=169., time_c=3.49, time_e=28.1,
+    #           input_size=1.204)
+    # ]
 ]

@@ -28,8 +28,9 @@ def index_to_one_hot(index, dim):
 
 
 def index_to_one_hot_tensor(index: th.Tensor, dim):
-    one_hot = th.zeros(len(index), dim).to(index.device)
-    one_hot.scatter_(1, index.view(-1, 1), 1)
+    index = index.view(-1, 1)
+    one_hot = th.zeros((len(index), dim)).to(index.device)
+    one_hot.scatter_(1, index, 1)
     return one_hot
 
 
@@ -37,6 +38,11 @@ def onehot_from_logits(logits: th.Tensor):
     argmax_acs = (logits == logits.max(1, keepdim=True)[0]).float()
     return argmax_acs
 
+
+def sample_from_logits(logits: th.Tensor):
+    dis = th.distributions.Categorical(logits)
+    # return index_to_one_hot_tensor(dis.sample(), logits.shape[1])
+    return dis.sample()
 
 def sample_gumbel(shape, eps=1e-20):
     u = th.rand(shape, device=DEVICE)

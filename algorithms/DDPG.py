@@ -40,11 +40,11 @@ class DDPG(Agent):
                                 for i in range(self.n_agents)]
 
         self.critic = [
-            CriticNet(self.n_agents * self.state_dim, self.n_agents * self.action_dim,
+            CriticNet(self.global_state_dim, self.n_agents * self.action_dim,
                       self.critic_hidden_size).to(device)
             for _ in range(self.n_agents)]
         self.critic_target = [
-            CriticNet(self.n_agents * self.state_dim, self.n_agents * self.action_dim,
+            CriticNet(self.global_state_dim, self.n_agents * self.action_dim,
                       self.critic_hidden_size).to(device)
             for _ in range(self.n_agents)]
         for i in range(self.n_agents):
@@ -62,14 +62,17 @@ class DDPG(Agent):
             pass
 
         batch = self.memory.sample(self.batch_size)
-        states_tensor = to_tensor(batch.states, self.device).view(-1, self.n_agents * self.state_dim)
+        states_tensor = to_tensor(batch.states, self.device).view(-1, self.n_agents, self.state_dim)
         actions_index_tensor = to_tensor(batch.actions, self.device, 'int').view(-1, self.n_agents)
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
-        next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents * self.state_dim)
+        next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
+        global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.n_agents, self.global_state_dim)
+        next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.n_agents,
+                                                                                         self.global_state_dim)
 
         # partial obs of each agent
-        obs = [states_tensor.view(-1, self.n_agents, self.state_dim)[:, i] for i in range(self.n_agents)]
+        obs = [states_tensor[:, i] for i in range(self.n_agents)]
         next_obs = [next_states_tensor.view(-1, self.n_agents, self.state_dim)[:, i] for i in range(self.n_agents)]
         # get joint action
         act = [index_to_one_hot_tensor(actions_index_tensor[:, i], self.action_dim) for i in range(self.n_agents)]
@@ -78,17 +81,20 @@ class DDPG(Agent):
         next_actions_tensor = th.cat(next_act, dim=1)
 
         for i in range(self.n_agents):
-            current_q = self.critic[i](states_tensor, actions_tensor).squeeze(1)
-            next_v = self.critic_target[i](next_states_tensor, next_actions_tensor).squeeze(1).detach()
-            target_q = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
+            current_q = self.critic[i](global_state_tensor[:, i], actions_tensor).squeeze(1)
+            next_q = self.critic_target[i](next_global_state_tensor[:, i], next_actions_tensor).squeeze(1)
+            target_q = rewards_tensor[:, i] + self.reward_gamma * next_q * (1. - dones_tensor[:, i])
 
             # calculate critic loss
             self.critic_optimizer[i].zero_grad()
             if self.critic_loss == "huber":
-                critic_loss = nn.SmoothL1Loss()(current_q, target_q)
+                critic_loss = nn.SmoothL1Loss()(current_q, target_q.detach())
             else:
-                critic_loss = nn.MSELoss()(current_q, target_q)
+                critic_loss = nn.MSELoss()(current_q, target_q.detach())
             critic_loss.backward()
+            if self.max_grad_norm is not None:
+                nn.utils.clip_grad_norm_(self.critic[i].parameters(), self.max_grad_norm)
+            self.critic_optimizer[i].step()
 
             # joint action, only differentiable for the i-th action
             actor_out = self.actor[i](obs[i])
@@ -99,19 +105,19 @@ class DDPG(Agent):
                 else:
                     curr_act.append(onehot_from_logits(pi(_obs).detach()))
             curr_actions_tensor = th.cat(curr_act, dim=1)
-            current_v = self.critic[i](states_tensor, curr_actions_tensor)
+            current_q = self.critic[i](global_state_tensor[:, i], curr_actions_tensor)
 
             # calculate actor loss
             self.actor_optimizer[i].zero_grad()
-            actor_loss = -th.mean(current_v)
-            actor_loss += th.mean((actor_out**2)) * 1e-3
+            actor_loss = -th.mean(current_q)
+            actor_loss += th.mean((actor_out ** 2)) * 1e-3
             actor_loss.backward()
 
             # optimizer step
             if self.max_grad_norm is not None:
                 nn.utils.clip_grad_norm_(self.critic[i].parameters(), self.max_grad_norm)
                 nn.utils.clip_grad_norm_(self.actor[i].parameters(), self.max_grad_norm)
-            self.critic_optimizer[i].step()
+
             self.actor_optimizer[i].step()
 
         # soft update
@@ -126,8 +132,16 @@ class DDPG(Agent):
         for i in range(self.n_agents):
             obs_tensor = state_tensor[:, i]
             actions_prob_tensor = self.actor[i](obs_tensor).squeeze(0)
-            actions_list = th.distributions.Categorical(logits=actions_prob_tensor)
-            action = actions_list.sample()
-            actions[i] = action.item()
+            # if self.n_episodes < self.episodes_before_train:
+            #     actions[i] = np.random.choice(self.env.n_actions)
+            # else:
+            actions[i] = th.argmax(actions_prob_tensor, dim=0).item()
+            # actions_list = th.distributions.Categorical(logits=actions_prob_tensor)
+            # action = actions_list.sample()
+            # actions[i] = action.item()
+            if evaluation and i == 0:
+                max_values, indices = th.topk(actions_prob_tensor, 3)
+                row = np.hstack((max_values.detach().cpu().numpy(), indices.detach().cpu().numpy()))
+                eval_records.append(row)
 
         return actions

@@ -122,8 +122,11 @@ class CAC(Agent):
         for i in range(self.n_agents):
             obs_tensor = state_tensor[:, i]
             actions_prob_tensor = self.actor[i](obs_tensor).squeeze(0)
-            actions_list = th.distributions.Categorical(actions_prob_tensor)
-            action = actions_list.sample()
-            actions[i] = action.item()
+            if evaluation:
+                actions[i] = th.argmax(actions_prob_tensor, dim=0).item()
+            else:
+                actions_list = th.distributions.Categorical(actions_prob_tensor)
+                action = actions_list.sample()
+                actions[i] = action.item()
 
         return actions

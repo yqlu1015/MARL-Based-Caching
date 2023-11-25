@@ -6,7 +6,8 @@ import numpy as np
 
 from common.Agent import Agent
 from common.Model import MeanCriticNet, ActorNet
-from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor, onehot_from_logits
+from common.utils import to_tensor, entropy, index_to_one_hot, index_to_one_hot_tensor, onehot_from_logits, \
+    sample_from_logits
 
 
 class MFACQS(Agent):
@@ -37,9 +38,9 @@ class MFACQS(Agent):
             for _ in range(self.n_agents)]
         self.actor_optimizer = [Adam(self.actor[i].parameters(), lr=self.actor_lr)
                                 for i in range(self.n_agents)]
-        self.critic = MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+        self.critic = MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, self.action_dim, 1,
                                     self.critic_output_act).to(device)
-        self.critic_target = MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, 1,
+        self.critic_target = MeanCriticNet(self.global_state_dim, self.action_dim, self.critic_hidden_size, self.action_dim, 1,
                                            self.critic_output_act).to(device)
         for i in range(self.n_agents):
             self.actor_target[i].load_state_dict(self.actor[i].state_dict())
@@ -62,25 +63,26 @@ class MFACQS(Agent):
         next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
         mean_actions_tensor = to_tensor(batch.mean_actions, self.device).view(-1, self.n_agents, self.action_dim)
-        global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.global_state_dim)
-        next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.global_state_dim)
+        global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.n_agents, self.global_state_dim)
+        next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.n_agents, self.global_state_dim)
 
         # partial obs of each agent
         obs = [states_tensor[:, i] for i in range(self.n_agents)]
         next_obs = [next_states_tensor[:, i] for i in range(self.n_agents)]
         # get joint action
         act = [index_to_one_hot_tensor(actions_index_tensor[:, i], self.action_dim) for i in range(self.n_agents)]
-        next_act = [onehot_from_logits(pi(_next_obs)) for pi, _next_obs in zip(self.actor_target, next_obs)]
+        next_act_index = [sample_from_logits(pi(_next_obs)) for pi, _next_obs in zip(self.actor_target, next_obs)]
+        next_act = [index_to_one_hot_tensor(next_act_index[i], self.action_dim) for i in range(self.n_agents)]
 
         for i in range(self.n_agents):
-            current_q = self.critic(global_state_tensor, act[i], mean_actions_tensor[:, i]).squeeze(1)
+            current_q = self.critic(global_state_tensor[:, i], act[i], mean_actions_tensor[:, i], id=i).squeeze(1)
             # calculate next mean action
             neighbors = self.env.get_obs(i)
             next_mean_action_tensor = th.zeros_like(mean_actions_tensor[:, i], device=self.device)
             for j in neighbors:
-                next_mean_action_tensor += act[j]
+                next_mean_action_tensor += next_act[j]
             next_mean_action_tensor /= len(neighbors)
-            next_q = self.critic_target(next_global_state_tensor, next_act[i], next_mean_action_tensor).squeeze(
+            next_q = self.critic_target(next_global_state_tensor[:, i], next_act[i], next_mean_action_tensor, id=i).squeeze(
                 1).detach()
             target_q = rewards_tensor[:, i] + self.reward_gamma * next_q * (1. - dones_tensor[:, i])
             # calculate vf loss
@@ -93,9 +95,9 @@ class MFACQS(Agent):
 
             # compute log action probs and target q
             actions_index = actions_index_tensor[:, i]
-            actions_prob = self.actor[i](obs[i])
-            log_action_prob = th.log(actions_prob.gather(1, actions_index.unsqueeze(1)).squeeze(1) + 1e-6)
-            values = current_q.detach()
+            actions_prob = self.actor[i](next_obs[i])
+            log_action_prob = th.log(actions_prob.gather(1, next_act_index[i].unsqueeze(1)).squeeze(1) + 1e-6)
+            values = next_q
             # calculate pg loss and entropy
             self.actor_optimizer[i].zero_grad()
             pg_loss = th.mean(-log_action_prob * values)
@@ -117,7 +119,7 @@ class MFACQS(Agent):
         self._soft_update_target(self.critic_target, self.critic)
 
     # get actions and mean actions by alternatively updating policy and mean action
-    def mean_action(self, state, evaluation=False):
+    def mean_action(self, state):
 
         actions = np.zeros(self.n_agents, dtype='int')
         state_tensor = to_tensor(state, self.device).view(-1, self.n_agents, self.state_dim)
@@ -128,10 +130,13 @@ class MFACQS(Agent):
                   np.exp(-1. * (self.n_episodes - self.episodes_before_train) / self.epsilon_decay)
 
         for i in range(self.n_agents):
-            if (self.n_episodes < self.episodes_before_train or np.random.rand() < epsilon) and not evaluation:
+            obs_tensor = state_tensor[:, i]
+            if evaluation:
+                actions_prob_tensor = self.actor[i](obs_tensor).squeeze(0)
+                actions[i] = th.argmax(actions_prob_tensor, dim=0).item()
+            elif self.n_episodes < self.episodes_before_train:
                 actions[i] = np.random.choice(self.env.n_actions)
             else:
-                obs_tensor = state_tensor[:, i]
                 actions_prob_tensor = self.actor[i](obs_tensor).squeeze(0)
                 actions_list = th.distributions.Categorical(actions_prob_tensor)
                 action = actions_list.sample()
@@ -149,5 +154,5 @@ class MFACQS(Agent):
         return actions, mean_actions
 
     def action(self, state, evaluation=False, eval_records=None):
-        actions, _ = self.mean_action(state, True)
+        actions, _ = self.mean_action(state)
         return actions

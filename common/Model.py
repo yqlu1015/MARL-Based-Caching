@@ -1,5 +1,5 @@
 from typing import Optional
-
+from common.utils import identity
 import torch as th
 from torch import nn
 
@@ -42,7 +42,7 @@ class CriticNet(nn.Module):
         self.fc0 = nn.Linear(action_dim, mid_dim)
         self.fc1 = nn.Linear(state_dim, mid_dim)
         self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
-        # self.fc4 = nn.Linear(mid_dim * 2, mid_dim * 2)
+        # self.fc4 = nn.Linear(mid_dim, mid_dim)
         self.fc3 = nn.Linear(mid_dim, output_size)
         self.activate = nn.ReLU()
 
@@ -83,9 +83,9 @@ class MeanValueNet(nn.Module):
 
     def __init__(self, state_dim, action_dim, mid_dim, output_size, output_act):
         super().__init__()
-        self.fc0 = nn.Linear(action_dim, mid_dim)
+        self.fc0 = nn.Linear(action_dim, 64)
         self.fc1 = nn.Linear(state_dim, mid_dim)
-        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
+        self.fc2 = nn.Linear(mid_dim + 64, mid_dim)
         # self.fc4 = nn.Linear(mid_dim * 2, mid_dim * 2)
         self.fc3 = nn.Linear(mid_dim, output_size)
         self.activate = nn.ReLU()
@@ -109,9 +109,9 @@ class MeanQNet(nn.Module):
 
     def __init__(self, state_dim, action_dim, mid_dim, output_size, output_act):
         super().__init__()
-        self.fc0 = nn.Linear(action_dim, mid_dim)
+        self.fc0 = nn.Linear(action_dim, 64)
         self.fc1 = nn.Linear(state_dim, mid_dim)
-        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
+        self.fc2 = nn.Linear(mid_dim + 64, mid_dim)
         # self.fc4 = nn.Linear(mid_dim * 2, mid_dim * 2)
         self.fc3 = nn.Linear(mid_dim, output_size)
         self.activate = nn.ReLU()
@@ -133,21 +133,28 @@ class MeanCriticNet(nn.Module):
     A network for mf-ac with state, action and mean action as input
     """
 
-    def __init__(self, state_dim, action_dim, mid_dim, output_size, output_act):
+    def __init__(self, state_dim, action_dim, mid_dim, action_len=10, output_size=1, output_act=identity):
         super().__init__()
-        self.fc0 = nn.Linear(action_dim, mid_dim)
-        self.fc1 = nn.Linear(state_dim + action_dim, mid_dim)
-        self.fc2 = nn.Linear(mid_dim * 2, mid_dim)
+        self.fc0 = nn.Linear(action_dim, 64)
+        self.fc1 = nn.Linear(state_dim, mid_dim)
+        self.fc4 = nn.Linear(action_len, mid_dim)
+        self.fc2 = nn.Linear(mid_dim * 2 + 64, mid_dim)
+        self.fc2p = nn.Linear(mid_dim * 2 + 64 + 1, mid_dim)
         self.fc3 = nn.Linear(mid_dim, output_size)
         self.activate = nn.ReLU()
         self.output_act = output_act
 
-    def forward(self, state, action, mean_action):
-        action_dense = self.activate(self.fc0(mean_action))
-        state_action = th.cat((state, action), 1)
-        state_dense = self.activate(self.fc1(state_action))
-        out = th.cat((state_dense, action_dense), 1)
-        out = self.activate(self.fc2(out))
+    def forward(self, state, action, mean_action, id=None):
+        mean_action_dense = self.activate(self.fc0(mean_action))
+        action_dense = self.activate(self.fc4(action))
+        state_dense = self.activate(self.fc1(state))
+        if id is None:
+            state_action = th.cat((state_dense, action_dense, mean_action_dense), 1)
+            out = self.activate(self.fc2(state_action))
+        else:
+            indices = th.ones(len(state), device=state.device) * id
+            state_action = th.cat((state_dense, action_dense, mean_action_dense, indices), 1)
+            out = self.activate(self.fc2p(state_action))
         out = self.fc3(out)
         out = self.output_act(out)
         return out

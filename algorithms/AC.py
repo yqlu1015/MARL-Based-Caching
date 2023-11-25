@@ -58,24 +58,24 @@ class AC(Agent):
         rewards_tensor = to_tensor(batch.rewards, self.device).view(-1, self.n_agents)
         next_states_tensor = to_tensor(batch.next_states, self.device).view(-1, self.n_agents, self.state_dim)
         dones_tensor = to_tensor(batch.dones, self.device).view(-1, self.n_agents)
-        global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.global_state_dim)
-        next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.global_state_dim)
+        global_state_tensor = to_tensor(batch.global_states, self.device).view(-1, self.n_agents, self.global_state_dim)
+        next_global_state_tensor = to_tensor(batch.next_global_states, self.device).view(-1, self.n_agents, self.global_state_dim)
 
         # compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken
         for i in range(self.n_agents):
             obs_tensor = states_tensor[:, i]
             next_obs_tensor = next_states_tensor[:, i]
-            current_v = self.critic[i](global_state_tensor).squeeze(1)
+            current_v = self.critic[i](global_state_tensor[:, i]).squeeze(1)
             # compute mean field V(s')
-            next_v = self.critic_target[i](next_global_state_tensor).squeeze(1).detach()
+            next_v = self.critic_target[i](next_global_state_tensor[:, i]).squeeze(1)
             target_v = rewards_tensor[:, i] + self.reward_gamma * next_v * (1. - dones_tensor[:, i])
             # calculate vf loss
             self.critic_optimizer[i].zero_grad()
             if self.critic_loss == "huber":
-                vf_loss = nn.SmoothL1Loss()(current_v, target_v)
+                vf_loss = nn.SmoothL1Loss()(current_v, target_v.detach())
             else:
-                vf_loss = nn.MSELoss()(current_v, target_v)
+                vf_loss = nn.MSELoss()(current_v, target_v.detach())
             vf_loss.backward()
 
             # compute log action probs and target q
@@ -109,8 +109,13 @@ class AC(Agent):
         for i in range(self.n_agents):
             obs_tensor = state_tensor[:, i]
             actions_prob_tensor = self.actor[i](obs_tensor).squeeze(0)
-            actions_list = th.distributions.Categorical(actions_prob_tensor)
-            action = actions_list.sample()
-            actions[i] = action.item()
+            # if evaluation:
+            actions[i] = th.argmax(actions_prob_tensor, dim=0).item()
+            # elif self.n_episodes < self.episodes_before_train:
+            #     actions[i] = np.random.choice(self.env.n_actions)
+            # else:
+            #     actions_list = th.distributions.Categorical(actions_prob_tensor)
+            #     action = actions_list.sample()
+            #     actions[i] = action.item()
 
         return actions
